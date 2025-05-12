@@ -1,0 +1,10 @@
+/target
+
+*.log
+
+.idea/
+*.iml
+
+Cargo.lock
+
+**/.claude/settings.local.json

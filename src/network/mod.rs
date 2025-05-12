@@ -1,5 +1,5 @@
-pub mod udp;
 pub mod node;
+pub mod udp;
 
-pub use udp::UdpNetwork;
 pub use node::Node;
+pub use udp::UdpNetwork;

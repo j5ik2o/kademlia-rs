@@ -43,7 +43,10 @@ async fn test_store_and_retrieve_between_nodes() -> kademlia::Result<()> {
     let test_key = "test_key";
     let test_value = "test_value";
 
-    println!("Storing key-value pair on bootstrap node: {} -> {}", test_key, test_value);
+    println!(
+      "Storing key-value pair on bootstrap node: {} -> {}",
+      test_key, test_value
+    );
     bootstrap_node
       .store(test_key.as_bytes(), test_value.as_bytes().to_vec())
       .await?;
@@ -104,7 +107,10 @@ async fn test_store_and_retrieve_mykey() -> kademlia::Result<()> {
     let test_key = "mykey";
     let test_value = "AAA";
 
-    println!("Storing key-value pair on bootstrap node: {} -> {}", test_key, test_value);
+    println!(
+      "Storing key-value pair on bootstrap node: {} -> {}",
+      test_key, test_value
+    );
     bootstrap_node
       .store(test_key.as_bytes(), test_value.as_bytes().to_vec())
       .await?;

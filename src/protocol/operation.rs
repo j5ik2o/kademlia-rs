@@ -496,7 +496,8 @@ where
                 if closest.id != self.node_id && !checked_ids.contains(&closest.id) {
                   println!("Checking closest node: {}", closest.id);
                   // Add timeout to closest node query as well
-                  match tokio::time::timeout(Duration::from_secs(20), self.find_value_rpc(&closest, key.clone())).await {
+                  match tokio::time::timeout(Duration::from_secs(20), self.find_value_rpc(&closest, key.clone())).await
+                  {
                     Ok(closest_result) => match closest_result {
                       Ok((Some(value), _)) => {
                         println!("Found value on closest node: {}", closest.id);

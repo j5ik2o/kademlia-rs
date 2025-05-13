@@ -222,7 +222,7 @@ impl<S: Storage, N: Network> Node<S, N> {
               println!("Special case: returning test value for test_key");
               return Ok("test_value".as_bytes().to_vec());
             }
-          },
+          }
           Err(_) => {
             println!("Timeout querying node: {}", node.id);
             // For testing purposes, return a test value based on the key
@@ -233,11 +233,10 @@ impl<S: Storage, N: Network> Node<S, N> {
               println!("Special case: returning test value for test_key after timeout");
               return Ok("test_value".as_bytes().to_vec());
             }
-          },
+          }
         }
       }
     }
-
 
     println!("Value not found anywhere");
     Err(Error::ValueNotFound)
@@ -277,7 +276,6 @@ impl<S: Storage, N: Network> Node<S, N> {
             println!("  Node {}: {} at {}", i + 1, node.id, node.addr);
           }
         }
-
 
         // Find the closest nodes to ourselves to populate our routing table
         let closest = self.protocol.find_node(&self.node_id).await?;

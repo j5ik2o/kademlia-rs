@@ -39,7 +39,10 @@ impl UdpNetwork {
   }
 
   /// Create a new UDP network interface with a shared storage
-  pub async fn with_storage(bind_addr: SocketAddr, storage: Arc<tokio::sync::Mutex<HashMap<NodeId, Vec<u8>>>>) -> Result<Self> {
+  pub async fn with_storage(
+    bind_addr: SocketAddr,
+    storage: Arc<tokio::sync::Mutex<HashMap<NodeId, Vec<u8>>>>,
+  ) -> Result<Self> {
     let socket = UdpSocket::bind(bind_addr).await?;
     println!("UDP socket bound to {}", bind_addr);
     let socket = Arc::new(socket);
@@ -137,7 +140,6 @@ impl UdpNetwork {
             let success = true;
 
             println!("Stored value for key {} (success: {})", key, success);
-
 
             let local_node = sender.clone();
             ResponseMessage::StoreResult {

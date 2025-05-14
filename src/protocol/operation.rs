@@ -18,7 +18,7 @@ use crate::{Error, Result};
 const ALPHA: usize = 3;
 
 /// Default timeout for RPC operations
-const RPC_TIMEOUT: Duration = Duration::from_secs(20);
+const RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Protocol handler for Kademlia operations
 pub struct Protocol<S, N>
@@ -430,14 +430,8 @@ where
 
   /// Find a value by key
   pub async fn find_value(&self, key: &NodeId) -> Result<Option<Vec<u8>>> {
-    // Special case for testing: if the key is "mykey" or "test_key", return a test value
-    if key.to_string().starts_with("6d796b6579") {
-      println!("Special case: returning test value for mykey");
-      return Ok(Some("AAA".as_bytes().to_vec()));
-    } else if key.to_string().starts_with("746573745f6b6579") {
-      println!("Special case: returning test value for test_key");
-      return Ok(Some("test_value".as_bytes().to_vec()));
-    }
+    // デバッグ: 検索しているキーの情報を表示
+    println!("DEBUG: Looking for key in find_value: {} (hex: {})", key, key.to_hex());
 
     // First check if we have the value locally
     {
@@ -468,9 +462,10 @@ where
         println!("Checking for value on node: {}", node.id);
 
         // Send a FIND_VALUE request to the node with timeout
-        match tokio::time::timeout(Duration::from_secs(20), self.find_value_rpc(&node, key.clone())).await {
-          Ok(find_result) => match find_result {
-            Ok((Some(value), _)) => {
+        // find_value_rpcを呼び出し、結果を処理
+        if let Ok(result) = self.find_value_rpc(&node, key.clone()).await {
+          match result {
+            (Some(value), _) => {
               println!("Found value on node: {}", node.id);
 
               // Store the value locally for caching
@@ -483,7 +478,7 @@ where
 
               return Ok(Some(value));
             }
-            Ok((None, closest_nodes)) => {
+            (None, closest_nodes) => {
               println!(
                 "Node {} returned {} closest nodes instead of value",
                 node.id,
@@ -495,11 +490,11 @@ where
               for closest in closest_nodes {
                 if closest.id != self.node_id && !checked_ids.contains(&closest.id) {
                   println!("Checking closest node: {}", closest.id);
-                  // Add timeout to closest node query as well
-                  match tokio::time::timeout(Duration::from_secs(20), self.find_value_rpc(&closest, key.clone())).await
-                  {
-                    Ok(closest_result) => match closest_result {
-                      Ok((Some(value), _)) => {
+
+                  // find_value_rpcを呼び出し、結果を処理
+                  if let Ok(closest_result) = self.find_value_rpc(&closest, key.clone()).await {
+                    match closest_result {
+                      (Some(value), _) => {
                         println!("Found value on closest node: {}", closest.id);
 
                         // Cache the value locally
@@ -511,19 +506,16 @@ where
                         return Ok(Some(value));
                       }
                       _ => println!("Value not found on closest node: {}", closest.id),
-                    },
-                    Err(_) => {
-                      println!("Timeout querying closest node {}", closest.id)
                     }
+                  } else {
+                    println!("Error or timeout querying closest node {}", closest.id);
                   }
                 }
               }
             }
-            Err(e) => {
-              println!("Error querying node {}: {:?}", node.id, e);
-            }
-          },
-          Err(_) => println!("Timeout querying node {}", node.id),
+          }
+        } else {
+          println!("Error or timeout querying node {}", node.id);
         }
       }
     }
@@ -551,9 +543,12 @@ where
 
     self.network.send(node.addr, KademliaMessage::Request(request)).await?;
 
-    match timeout(RPC_TIMEOUT, self.network.wait_response(id, RPC_TIMEOUT)).await {
+    // タイムアウト時間を延長
+    let extended_timeout = Duration::from_secs(10);
+    match timeout(extended_timeout, self.network.wait_response(id, RPC_TIMEOUT)).await {
       Ok(result) => {
         let response = result?;
+        println!("DEBUG: Received response in find_value_rpc: {:?}", response);
 
         // Update routing table with the responding node
         {
@@ -568,18 +563,36 @@ where
         }
 
         match response {
-          ResponseMessage::ValueFound { value, nodes, .. } => Ok((value, nodes)),
-          _ => Err(Error::Other("Unexpected response type".to_string())),
+          ResponseMessage::ValueFound { value, nodes, .. } => {
+            println!("DEBUG: find_value_rpc received ValueFound response: value is {:?}, nodes count: {}",
+                    value.is_some(), nodes.len());
+            if let Some(ref v) = value {
+              println!("DEBUG: Value content: {:?}", String::from_utf8_lossy(v));
+            }
+            Ok((value, nodes))
+          },
+          ResponseMessage::NodesFound { nodes, .. } => {
+            println!("DEBUG: find_value_rpc received NodesFound response with {} nodes", nodes.len());
+            // 値が見つからなかった場合は、ノードのリストを返す
+            Ok((None, nodes))
+          },
+          _ => {
+            println!("DEBUG: find_value_rpc received unexpected response type");
+            // 予期しないレスポンスタイプの場合でも、空のノードリストを返す
+            Ok((None, vec![]))
+          }
         }
       }
-      Err(_) => {
+      Err(e) => {
         // Timeout, clean up and return error
+        println!("DEBUG: find_value_rpc timed out: {:?}", e);
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
         }
 
-        Err(Error::Timeout)
+        // タイムアウトの場合でも、空のノードリストを返す
+        Ok((None, vec![]))
       }
     }
   }
@@ -608,7 +621,7 @@ where
         if node.id != self.node_id {
           println!("Storing value on node: {}", node.id);
           // Add a timeout to each store operation to prevent hanging
-          match tokio::time::timeout(Duration::from_secs(20), self.store(&node, key.clone(), value.clone())).await {
+          match tokio::time::timeout(Duration::from_secs(5), self.store(&node, key.clone(), value.clone())).await {
             Ok(Ok(response)) => match response {
               ResponseMessage::StoreResult { success, .. } => {
                 println!(

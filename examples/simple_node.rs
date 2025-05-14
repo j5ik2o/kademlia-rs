@@ -143,7 +143,7 @@ async fn async_main() -> kademlia::Result<()> {
     let key = matches.value_of("key").unwrap();
     let value = matches.value_of("value").unwrap();
 
-    println!("Storing key-value pair: {} -> {}", key, value);
+    println!("Storing key-value pair: '{}' -> \"{}\"", key, value);
 
     let node = Node::with_udp(addr).await?;
     node.start().await?;
@@ -155,19 +155,23 @@ async fn async_main() -> kademlia::Result<()> {
     println!("Storing key-value pair...");
     println!("Running store operation - this might take a few seconds...");
     match tokio::time::timeout(
-      Duration::from_secs(30),
+      Duration::from_secs(10),
       node.store(key.as_bytes(), value.as_bytes().to_vec()),
     )
     .await
     {
       Ok(result) => match result {
-        Ok(_) => println!("Successfully stored key-value pair."),
-        Err(e) => println!("Error while storing: {:?}", e),
+        Ok(_) => println!("Successfully stored key-value pair: '{}' -> \"{}\"", key, value),
+        Err(e) => println!("Error while storing key '{}': {:?}", key, e),
       },
       Err(_) => {
-        println!("Storage operation timed out after 30 seconds. Continuing anyway...")
+        println!("Storage operation timed out after 10 seconds. Continuing anyway...")
       }
     };
+
+    // 重要: 応答を受信するために少し待機する
+    println!("Waiting for 1 second to ensure all responses are received...");
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Exit the program normally, allowing the runtime to shut down cleanly
     println!("Operation completed successfully. Exiting...");
@@ -188,18 +192,24 @@ async fn async_main() -> kademlia::Result<()> {
 
     println!("Looking up key...");
     println!("Running lookup operation - this might take a few seconds...");
-    match tokio::time::timeout(Duration::from_secs(30), node.get(key.as_bytes())).await {
+    match tokio::time::timeout(Duration::from_secs(10), node.get(key.as_bytes())).await {
       Ok(result) => match result {
         Ok(value) => {
           let value_str = String::from_utf8_lossy(&value);
-          println!("Found value: {}", value_str);
+          println!("Found value for key '{}': \"{}\"", key, value_str);
         }
         Err(e) => {
-          println!("Error looking up key: {}", e);
+          println!("Error looking up key '{}': {}", key, e);
         }
       },
-      Err(_) => println!("Lookup operation timed out after 30 seconds. Continuing anyway..."),
+      Err(_) => {
+        println!("Lookup operation timed out after 10 seconds. Continuing anyway...");
+      },
     }
+
+    // 重要: 応答を受信するために少し待機する
+    println!("Waiting for 1 second to ensure all responses are received...");
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Exit the program normally, allowing the runtime to shut down cleanly
     println!("Operation completed successfully. Exiting...");

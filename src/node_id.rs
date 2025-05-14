@@ -35,6 +35,12 @@ impl NodeId {
     let mut bytes = [0u8; KEY_LENGTH_BYTES];
     let len = std::cmp::min(data.len(), KEY_LENGTH_BYTES);
     bytes[..len].copy_from_slice(&data[..len]);
+
+    // デバッグ: 変換前後のバイト配列を表示
+    println!("DEBUG: NodeId::from_bytes - Input data: {:?}", data);
+    println!("DEBUG: NodeId::from_bytes - Converted bytes: {:?}", bytes);
+    println!("DEBUG: NodeId::from_bytes - Hex representation: {}", hex::encode(bytes));
+
     NodeId { bytes }
   }
 

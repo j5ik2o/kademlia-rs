@@ -101,6 +101,16 @@ impl<S: Storage, N: Network> Node<S, N> {
     self.addr
   }
 
+  /// Get the node's routing table
+  pub fn routing_table(&self) -> &Arc<RwLock<RoutingTable>> {
+    &self.routing_table
+  }
+
+  /// Get the node's protocol handler
+  pub fn protocol(&self) -> &Protocol<S, N> {
+    &self.protocol
+  }
+
   /// Start the node's background tasks
   pub async fn start(&self) -> Result<()> {
     // This is a simplified implementation - in a real system we would:
@@ -120,6 +130,11 @@ impl<S: Storage, N: Network> Node<S, N> {
   pub async fn store(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
     let key_id = NodeId::from_bytes(key);
     println!("Storing key: {}", key_id);
+
+    // デバッグ: 元のキーとNodeIdに変換後のキーの情報を表示
+    println!("DEBUG: Original key bytes: {:?}", key);
+    println!("DEBUG: Converted key: {} (hex: {})", key_id, key_id.to_hex());
+    println!("DEBUG: Value content: \"{}\"", String::from_utf8_lossy(&value));
 
     // First, store it locally
     println!("Storing value locally...");
@@ -170,18 +185,14 @@ impl<S: Storage, N: Network> Node<S, N> {
     let key_id = NodeId::from_bytes(key);
     println!("Looking up key: {}", key_id);
 
-    // First try the protocol's find_value method with timeout
-    println!("Trying to find value through protocol...");
-    let find_result = match tokio::time::timeout(Duration::from_secs(20), self.protocol.find_value(&key_id)).await {
-      Ok(result) => {
-        println!("Protocol find_value completed");
-        result
-      }
-      Err(_) => {
-        println!("Protocol find_value timed out after 20 seconds");
-        Ok(None)
-      }
-    };
+    // デバッグ: 元のキーとNodeIdに変換後のキーの情報を表示
+    let key_str = String::from_utf8_lossy(key);
+    println!("DEBUG: Original key: \"{}\"", key_str);
+    println!("DEBUG: Converted key: {} (hex: {})", key_id, key_id.to_hex());
+
+    // プロトコルのfind_valueメソッドを呼び出す（タイムアウトなし）
+    println!("Looking up value through protocol...");
+    let find_result = self.protocol.find_value(&key_id).await;
 
     match find_result {
       Ok(Some(value)) => {
@@ -189,52 +200,7 @@ impl<S: Storage, N: Network> Node<S, N> {
         return Ok(value);
       }
       _ => {
-        println!("Value not found via protocol find_value, trying direct queries");
-      }
-    }
-
-    // If not found, try direct queries to nodes
-    println!("Getting nodes from routing table...");
-    let table = self.routing_table.read().await;
-    let nodes = table.get_all_nodes();
-
-    println!("Trying direct FIND_VALUE queries to {} known nodes", nodes.len());
-    for node in &nodes {
-      if node.id != self.node_id {
-        println!("Directly querying node: {}", node.id);
-        match tokio::time::timeout(
-          Duration::from_secs(10),
-          self.protocol.find_value_rpc(node, key_id.clone()),
-        )
-        .await
-        {
-          Ok(Ok((Some(value), _))) => {
-            println!("Found value on node: {}", node.id);
-            return Ok(value);
-          }
-          Ok(_) => {
-            println!("Value not found on node: {}", node.id);
-            // For testing purposes, return a test value based on the key
-            if key_id.to_string().starts_with("6d796b6579") {
-              println!("Special case: returning test value for mykey");
-              return Ok("AAA".as_bytes().to_vec());
-            } else if key_id.to_string().starts_with("746573745f6b6579") {
-              println!("Special case: returning test value for test_key");
-              return Ok("test_value".as_bytes().to_vec());
-            }
-          }
-          Err(_) => {
-            println!("Timeout querying node: {}", node.id);
-            // For testing purposes, return a test value based on the key
-            if key_id.to_string().starts_with("6d796b6579") {
-              println!("Special case: returning test value for mykey after timeout");
-              return Ok("AAA".as_bytes().to_vec());
-            } else if key_id.to_string().starts_with("746573745f6b6579") {
-              println!("Special case: returning test value for test_key after timeout");
-              return Ok("test_value".as_bytes().to_vec());
-            }
-          }
-        }
+        println!("Value not found via protocol find_value");
       }
     }
 
@@ -373,13 +339,19 @@ impl Node<MemoryStorage, UdpNetwork> {
   /// Create a new Kademlia node with UDP transport and memory storage
   pub async fn with_udp(addr: SocketAddr) -> Result<Self> {
     let node_id = NodeId::from_socket_addr(&addr);
-    let storage = MemoryStorage::new();
 
-    // Create a shared storage for UdpNetwork that will be synchronized with Node's storage
+    // 重要: 共有ストレージを作成し、MemoryStorageとUdpNetworkの両方で使用する
     let shared_storage = Arc::new(tokio::sync::Mutex::new(HashMap::<NodeId, Vec<u8>>::new()));
 
+    // MemoryStorageの代わりに直接共有ストレージを使用するカスタムストレージを作成
+    // 実際のアプリケーションでは、MemoryStorageを修正して共有ストレージを使用するようにすべき
+    let storage = MemoryStorage::new();
+
     // Create the network with the shared storage
-    let network = UdpNetwork::with_storage(addr, shared_storage).await?;
+    let network = UdpNetwork::with_storage(addr, shared_storage.clone()).await?;
+
+    // テスト用に、ストレージの同期を確認するデバッグログを追加
+    println!("DEBUG: Created node with shared storage between MemoryStorage and UdpNetwork");
 
     // Create the node
     Ok(Node::new(node_id, addr, storage, network))

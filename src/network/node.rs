@@ -185,7 +185,10 @@ impl<S: Storage, N: Network> Node<S, N> {
     let table = self.routing_table.read().await;
     let nodes = table.get_all_nodes();
 
-    tracing::info!(node_count = nodes.len(), "Additionally sending STORE to nodes in routing table");
+    tracing::info!(
+      node_count = nodes.len(),
+      "Additionally sending STORE to nodes in routing table"
+    );
     for node in &nodes {
       if node.id != self.node_id {
         tracing::debug!(target_node = %node.id, "Directly sending STORE to node");

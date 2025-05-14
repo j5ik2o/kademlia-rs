@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand, Args};
+use clap::{Args, Parser, Subcommand};
 use tokio::signal;
 use tokio::time::sleep;
 
@@ -28,61 +28,61 @@ fn main() -> kademlia::Result<()> {
 #[command(version = "0.1.0")]
 #[command(about = "A simple Kademlia DHT implementation", long_about = None)]
 struct Cli {
-    /// Port to listen on
-    #[arg(short, long, default_value = "8000")]
-    port: u16,
+  /// Port to listen on
+  #[arg(short, long, default_value = "8000")]
+  port: u16,
 
-    /// Subcommand to execute
-    #[command(subcommand)]
-    command: Command,
+  /// Subcommand to execute
+  #[command(subcommand)]
+  command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run as a bootstrap node
-    Bootstrap,
+  /// Run as a bootstrap node
+  Bootstrap,
 
-    /// Join an existing Kademlia network
-    Join(JoinArgs),
+  /// Join an existing Kademlia network
+  Join(JoinArgs),
 
-    /// Store a key-value pair
-    Store(StoreArgs),
+  /// Store a key-value pair
+  Store(StoreArgs),
 
-    /// Get a value by key
-    Get(GetArgs),
+  /// Get a value by key
+  Get(GetArgs),
 }
 
 #[derive(Args)]
 struct JoinArgs {
-    /// Bootstrap node address
-    #[arg(short, long)]
-    bootstrap: String,
+  /// Bootstrap node address
+  #[arg(short, long)]
+  bootstrap: String,
 }
 
 #[derive(Args)]
 struct StoreArgs {
-    /// Bootstrap node address
-    #[arg(short, long)]
-    bootstrap: String,
+  /// Bootstrap node address
+  #[arg(short, long)]
+  bootstrap: String,
 
-    /// Key to store
-    #[arg(short, long)]
-    key: String,
+  /// Key to store
+  #[arg(short, long)]
+  key: String,
 
-    /// Value to store
-    #[arg(short, long)]
-    value: String,
+  /// Value to store
+  #[arg(short, long)]
+  value: String,
 }
 
 #[derive(Args)]
 struct GetArgs {
-    /// Bootstrap node address
-    #[arg(short, long)]
-    bootstrap: String,
+  /// Bootstrap node address
+  #[arg(short, long)]
+  bootstrap: String,
 
-    /// Key to lookup
-    #[arg(short, long)]
-    key: String,
+  /// Key to lookup
+  #[arg(short, long)]
+  key: String,
 }
 
 async fn async_main() -> kademlia::Result<()> {
@@ -108,7 +108,7 @@ async fn async_main() -> kademlia::Result<()> {
       loop {
         sleep(Duration::from_secs(1)).await;
       }
-    },
+    }
     Command::Join(args) => {
       // Join an existing network
       let bootstrap_addr = args.bootstrap.parse::<SocketAddr>().unwrap();
@@ -126,7 +126,7 @@ async fn async_main() -> kademlia::Result<()> {
       loop {
         sleep(Duration::from_secs(1)).await;
       }
-    },
+    }
     Command::Store(args) => {
       // Store a key-value pair
       let bootstrap_addr = args.bootstrap.parse::<SocketAddr>().unwrap();
@@ -166,7 +166,7 @@ async fn async_main() -> kademlia::Result<()> {
       // Exit the program normally, allowing the runtime to shut down cleanly
       tracing::info!("Operation completed successfully. Exiting");
       return Ok(());
-    },
+    }
     Command::Get(args) => {
       // Get a value by key
       let bootstrap_addr = args.bootstrap.parse::<SocketAddr>().unwrap();
@@ -195,7 +195,7 @@ async fn async_main() -> kademlia::Result<()> {
         },
         Err(_) => {
           tracing::warn!("Lookup operation timed out after 10 seconds. Continuing anyway");
-        },
+        }
       }
 
       // IMPORTANT: Wait for a short period to ensure all responses are received

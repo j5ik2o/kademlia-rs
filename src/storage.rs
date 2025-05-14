@@ -295,7 +295,7 @@ impl Storage for DualStorage {
             // Store directly since we have a mutable self
             let _ = self.memory_storage.store(key, value.clone());
             Ok(value)
-          },
+          }
           None => Err(Error::ValueNotFound),
         }
       }

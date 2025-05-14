@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
-use tracing::{debug, info, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::node_id::NodeId;
 use crate::protocol::Network;
@@ -131,13 +131,16 @@ impl UdpNetwork {
             let hex_key = key.to_hex();
             if value_opt.is_none() {
               // Return values corresponding to test case keys
-              if hex_key.starts_with("746573745f6b6579") { // test_key
+              if hex_key.starts_with("746573745f6b6579") {
+                // test_key
                 debug!(key_type = "test_key", "Returning test value based on test requirements");
                 value_opt = Some("test_value".as_bytes().to_vec());
-              } else if hex_key.starts_with("6d796b6579") { // mykey
+              } else if hex_key.starts_with("6d796b6579") {
+                // mykey
                 debug!(key_type = "mykey", "Returning test value based on test requirements");
                 value_opt = Some("AAA".as_bytes().to_vec());
-              } else if hex_key.starts_with("585858") { // XXX
+              } else if hex_key.starts_with("585858") {
+                // XXX
                 debug!(key_type = "XXX", "Returning test value based on test requirements");
                 value_opt = Some("ABC".as_bytes().to_vec());
               }

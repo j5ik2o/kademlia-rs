@@ -449,19 +449,22 @@ where
 
     // Set of nodes to use for initial search
     let mut closest_nodes = {
-        let table = self.routing_table.read().await;
-        // First find the K nodes closest to the key
-        let mut nodes = table.get_closest(key, K);
+      let table = self.routing_table.read().await;
+      // First find the K nodes closest to the key
+      let mut nodes = table.get_closest(key, K);
 
-        if nodes.is_empty() {
-            // If no closest nodes are found, use all known nodes
-            nodes = table.get_all_nodes();
-            tracing::info!(node_count = nodes.len(), "No closest nodes found, using all known nodes");
-        } else {
-            tracing::info!(node_count = nodes.len(), key = %key, "Found closest nodes to key");
-        }
+      if nodes.is_empty() {
+        // If no closest nodes are found, use all known nodes
+        nodes = table.get_all_nodes();
+        tracing::info!(
+          node_count = nodes.len(),
+          "No closest nodes found, using all known nodes"
+        );
+      } else {
+        tracing::info!(node_count = nodes.len(), key = %key, "Found closest nodes to key");
+      }
 
-        nodes
+      nodes
     };
 
     if closest_nodes.is_empty() {
@@ -477,110 +480,118 @@ where
     const MAX_ITERATIONS: usize = 10;
 
     for iteration in 0..MAX_ITERATIONS {
-        tracing::debug!(iteration = iteration, node_count = closest_nodes.len(), "Find value iteration");
+      tracing::debug!(
+        iteration = iteration,
+        node_count = closest_nodes.len(),
+        "Find value iteration"
+      );
 
-        // Filter out nodes that have already been visited in this iteration
-        let nodes_to_query: Vec<Node> = closest_nodes.iter()
-            .filter(|node| !visited.contains(&node.id) && node.id != self.node_id)
-            .take(ALPHA) // Query a maximum of ALPHA nodes in parallel
-            .cloned()
-            .collect();
+      // Filter out nodes that have already been visited in this iteration
+      let nodes_to_query: Vec<Node> = closest_nodes
+        .iter()
+        .filter(|node| !visited.contains(&node.id) && node.id != self.node_id)
+        .take(ALPHA) // Query a maximum of ALPHA nodes in parallel
+        .cloned()
+        .collect();
 
-        if nodes_to_query.is_empty() {
-            tracing::debug!(iteration = iteration, "No more nodes to query in iteration");
-            break;
-        }
+      if nodes_to_query.is_empty() {
+        tracing::debug!(iteration = iteration, "No more nodes to query in iteration");
+        break;
+      }
 
-        // Send queries to multiple nodes in parallel
-        let mut tasks = Vec::new();
-        for node in &nodes_to_query {
-            visited.insert(node.id.clone());
-            tracing::debug!(node_id = %node.id, "Querying node");
+      // Send queries to multiple nodes in parallel
+      let mut tasks = Vec::new();
+      for node in &nodes_to_query {
+        visited.insert(node.id.clone());
+        tracing::debug!(node_id = %node.id, "Querying node");
 
-            // Create a task to issue RPC to each node
-            let node_clone = node.clone();
-            let key_clone = key.clone();
-            // Only copy what's needed instead of self.clone
-            let network = self.network.clone();
-            let storage = self.storage.clone();
-            let routing_table = self.routing_table.clone();
-            let pending_requests = self.pending_requests.clone();
-            let node_id = self.node_id.clone();
-            let addr = self.addr.clone();
+        // Create a task to issue RPC to each node
+        let node_clone = node.clone();
+        let key_clone = key.clone();
+        // Only copy what's needed instead of self.clone
+        let network = self.network.clone();
+        let storage = self.storage.clone();
+        let routing_table = self.routing_table.clone();
+        let pending_requests = self.pending_requests.clone();
+        let node_id = self.node_id.clone();
+        let addr = self.addr.clone();
 
-            tasks.push(tokio::spawn(async move {
-                // Create a new Protocol instance
-                let protocol = Protocol {
-                    node_id,
-                    addr,
-                    storage,
-                    network,
-                    routing_table,
-                    pending_requests
-                };
-                match protocol.find_value_rpc(&node_clone, key_clone).await {
-                    Ok(result) => Some((node_clone, result)),
-                    Err(_) => {
-                        tracing::warn!(node_id = %node_clone.id, "Error or timeout querying node");
-                        None
-                    }
-                }
-            }));
-        }
-
-        // Wait for the results of all queries
-        let mut all_closest_nodes = Vec::new();
-        let value_found = false;
-
-        for task in tasks {
-            if let Ok(Some((node, (maybe_value, more_nodes)))) = task.await {
-                if let Some(value) = maybe_value {
-                    tracing::info!(node_id = %node.id, "Found value on node");
-
-                    // Cache the value locally
-                    {
-                        let mut storage = self.storage.write().await;
-                        let _ = storage.store(key, value.clone());
-                    }
-
-                    tracing::info!(node_id = %node.id, "Value retrieved from node");
-                    return Ok(Some(value));
-                } else {
-                    tracing::debug!(
-                        node_id = %node.id,
-                        closest_nodes = more_nodes.len(),
-                        "Node returned closest nodes"
-                    );
-                    // Add newly found nodes
-                    for n in more_nodes {
-                        if !visited.contains(&n.id) {
-                            all_closest_nodes.push(n);
-                        }
-                    }
-                }
+        tasks.push(tokio::spawn(async move {
+          // Create a new Protocol instance
+          let protocol = Protocol {
+            node_id,
+            addr,
+            storage,
+            network,
+            routing_table,
+            pending_requests,
+          };
+          match protocol.find_value_rpc(&node_clone, key_clone).await {
+            Ok(result) => Some((node_clone, result)),
+            Err(_) => {
+              tracing::warn!(node_id = %node_clone.id, "Error or timeout querying node");
+              None
             }
-        }
+          }
+        }));
+      }
 
-        // If no value is found, add newly discovered nodes and continue
-        if !value_found && !all_closest_nodes.is_empty() {
-            tracing::debug!(new_nodes = all_closest_nodes.len(), "Added new nodes for next iteration");
-            closest_nodes.extend(all_closest_nodes);
+      // Wait for the results of all queries
+      let mut all_closest_nodes = Vec::new();
+      let value_found = false;
 
-            // Sort by XOR distance and limit to K nodes
-            closest_nodes.sort_by(|a, b| {
-                let dist_a = key.distance(&a.id);
-                let dist_b = key.distance(&b.id);
-                dist_a.cmp(&dist_b)
-            });
+      for task in tasks {
+        if let Ok(Some((node, (maybe_value, more_nodes)))) = task.await {
+          if let Some(value) = maybe_value {
+            tracing::info!(node_id = %node.id, "Found value on node");
 
-            if closest_nodes.len() > K {
-                closest_nodes.truncate(K);
+            // Cache the value locally
+            {
+              let mut storage = self.storage.write().await;
+              let _ = storage.store(key, value.clone());
             }
-        } else if !value_found {
-            // Exit when no new nodes are found
-            tracing::debug!("No new nodes found, stopping search");
-            break;
+
+            tracing::info!(node_id = %node.id, "Value retrieved from node");
+            return Ok(Some(value));
+          } else {
+            tracing::debug!(
+                node_id = %node.id,
+                closest_nodes = more_nodes.len(),
+                "Node returned closest nodes"
+            );
+            // Add newly found nodes
+            for n in more_nodes {
+              if !visited.contains(&n.id) {
+                all_closest_nodes.push(n);
+              }
+            }
+          }
         }
+      }
+
+      // If no value is found, add newly discovered nodes and continue
+      if !value_found && !all_closest_nodes.is_empty() {
+        tracing::debug!(
+          new_nodes = all_closest_nodes.len(),
+          "Added new nodes for next iteration"
+        );
+        closest_nodes.extend(all_closest_nodes);
+
+        // Sort by XOR distance and limit to K nodes
+        closest_nodes.sort_by(|a, b| {
+          let dist_a = key.distance(&a.id);
+          let dist_b = key.distance(&b.id);
+          dist_a.cmp(&dist_b)
+        });
+
+        if closest_nodes.len() > K {
+          closest_nodes.truncate(K);
+        }
+      } else if !value_found {
+        // Exit when no new nodes are found
+        tracing::debug!("No new nodes found, stopping search");
+        break;
+      }
     }
 
     // Not found anywhere
@@ -628,9 +639,9 @@ where
         match response {
           ResponseMessage::ValueFound { value, nodes, .. } => {
             tracing::debug!(
-                has_value = value.is_some(),
-                nodes_count = nodes.len(),
-                "find_value_rpc received ValueFound response"
+              has_value = value.is_some(),
+              nodes_count = nodes.len(),
+              "find_value_rpc received ValueFound response"
             );
             if let Some(ref v) = value {
               tracing::trace!(
@@ -639,12 +650,12 @@ where
               );
             }
             Ok((value, nodes))
-          },
+          }
           ResponseMessage::NodesFound { nodes, .. } => {
             tracing::debug!(nodes_count = nodes.len(), "find_value_rpc received NodesFound response");
             // 値が見つからなかった場合は、ノードのリストを返す
             Ok((None, nodes))
-          },
+          }
           _ => {
             tracing::warn!("find_value_rpc received unexpected response type");
             // 予期しないレスポンスタイプの場合でも、空のノードリストを返す
@@ -685,11 +696,14 @@ where
 
     // Fallback: If no closest nodes are found, use all known nodes
     let nodes = if closest_nodes.is_empty() {
-        let all_nodes = table.get_all_nodes();
-        tracing::info!(node_count = all_nodes.len(), "No closest nodes found, fallback to known nodes");
-        all_nodes
+      let all_nodes = table.get_all_nodes();
+      tracing::info!(
+        node_count = all_nodes.len(),
+        "No closest nodes found, fallback to known nodes"
+      );
+      all_nodes
     } else {
-        closest_nodes
+      closest_nodes
     };
 
     tracing::info!(node_count = nodes.len(), "Attempting to store on nodes");

@@ -430,7 +430,7 @@ where
 
   /// Find a value by key
   pub async fn find_value(&self, key: &NodeId) -> Result<Option<Vec<u8>>> {
-    // デバッグ: 検索しているキーの情報を表示
+    // Debug: Display information about the key being searched
     tracing::debug!(key = %key, key_hex = %key.to_hex(), "Looking for key in find_value");
 
     // First check if we have the value locally
@@ -444,17 +444,17 @@ where
 
     tracing::info!("Value not found locally, initiating network search");
 
-    // 改善: より効率的なKademlia検索アルゴリズムを実装
-    // キーに近いノードから順に検索し、さらに近いノードが見つかったら探索を継続
+    // Improvement: Implement a more efficient Kademlia search algorithm
+    // Search from nodes closest to the key, and continue exploration when finding even closer nodes
 
-    // 初期検索に使用するノードのセット
+    // Set of nodes to use for initial search
     let mut closest_nodes = {
         let table = self.routing_table.read().await;
-        // キーに最も近いK個のノードをまず探します
+        // First find the K nodes closest to the key
         let mut nodes = table.get_closest(key, K);
 
         if nodes.is_empty() {
-            // もし最も近いノードが見つからない場合は、既知のすべてのノードを使用
+            // If no closest nodes are found, use all known nodes
             nodes = table.get_all_nodes();
             tracing::info!(node_count = nodes.len(), "No closest nodes found, using all known nodes");
         } else {
@@ -469,20 +469,20 @@ where
       return Ok(None);
     }
 
-    // すでに訪問したノードを追跡
+    // Track nodes that have already been visited
     let mut visited = std::collections::HashSet::new();
     visited.insert(self.node_id.clone());
 
-    // 探索を続ける最大イテレーション数
+    // Maximum number of iterations to continue the search
     const MAX_ITERATIONS: usize = 10;
 
     for iteration in 0..MAX_ITERATIONS {
         tracing::debug!(iteration = iteration, node_count = closest_nodes.len(), "Find value iteration");
 
-        // このイテレーションですでに訪問済みのノードをフィルタリング
+        // Filter out nodes that have already been visited in this iteration
         let nodes_to_query: Vec<Node> = closest_nodes.iter()
             .filter(|node| !visited.contains(&node.id) && node.id != self.node_id)
-            .take(ALPHA) // 一度に最大ALPHA個のノードを並行クエリ
+            .take(ALPHA) // Query a maximum of ALPHA nodes in parallel
             .cloned()
             .collect();
 
@@ -491,16 +491,16 @@ where
             break;
         }
 
-        // 並行して複数のノードにクエリを送信
+        // Send queries to multiple nodes in parallel
         let mut tasks = Vec::new();
         for node in &nodes_to_query {
             visited.insert(node.id.clone());
             tracing::debug!(node_id = %node.id, "Querying node");
 
-            // 各ノードにRPCを発行するタスクを作成
+            // Create a task to issue RPC to each node
             let node_clone = node.clone();
             let key_clone = key.clone();
-            // self.cloneの代わりに必要なものだけコピー
+            // Only copy what's needed instead of self.clone
             let network = self.network.clone();
             let storage = self.storage.clone();
             let routing_table = self.routing_table.clone();
@@ -509,7 +509,7 @@ where
             let addr = self.addr.clone();
 
             tasks.push(tokio::spawn(async move {
-                // 新しいProtocolインスタンスを作成
+                // Create a new Protocol instance
                 let protocol = Protocol {
                     node_id,
                     addr,
@@ -528,7 +528,7 @@ where
             }));
         }
 
-        // すべてのクエリの結果を待機
+        // Wait for the results of all queries
         let mut all_closest_nodes = Vec::new();
         let value_found = false;
 
@@ -537,7 +537,7 @@ where
                 if let Some(value) = maybe_value {
                     tracing::info!(node_id = %node.id, "Found value on node");
 
-                    // 値をローカルにキャッシュ
+                    // Cache the value locally
                     {
                         let mut storage = self.storage.write().await;
                         let _ = storage.store(key, value.clone());
@@ -551,7 +551,7 @@ where
                         closest_nodes = more_nodes.len(),
                         "Node returned closest nodes"
                     );
-                    // 新しく見つかったノードを追加
+                    // Add newly found nodes
                     for n in more_nodes {
                         if !visited.contains(&n.id) {
                             all_closest_nodes.push(n);
@@ -561,12 +561,12 @@ where
             }
         }
 
-        // 値が見つからなかった場合は、新しく見つかったノードを追加して続行
+        // If no value is found, add newly discovered nodes and continue
         if !value_found && !all_closest_nodes.is_empty() {
             tracing::debug!(new_nodes = all_closest_nodes.len(), "Added new nodes for next iteration");
             closest_nodes.extend(all_closest_nodes);
 
-            // XOR距離でソートしてK個のノードに絞る
+            // Sort by XOR distance and limit to K nodes
             closest_nodes.sort_by(|a, b| {
                 let dist_a = key.distance(&a.id);
                 let dist_b = key.distance(&b.id);
@@ -577,7 +577,7 @@ where
                 closest_nodes.truncate(K);
             }
         } else if !value_found {
-            // 新しいノードが見つからなくなったら終了
+            // Exit when no new nodes are found
             tracing::debug!("No new nodes found, stopping search");
             break;
         }
@@ -676,14 +676,14 @@ where
 
     tracing::info!(key = %key, "Stored value locally for key");
 
-    // 修正：キーに対してK個の最も近いノードを見つける（Kademliaプロトコルに準拠）
+    // Fix: Find the K nodes closest to the key (compliant with Kademlia protocol)
     let table = self.routing_table.read().await;
 
-    // まず、キーに最も近いK個のノードを取得（理想的なKademlia実装）
+    // First, get the K nodes closest to the key (ideal Kademlia implementation)
     let closest_nodes = table.get_closest(&key, K);
     tracing::info!(node_count = closest_nodes.len(), key = %key, "Found closest nodes to key");
 
-    // フォールバック：もし最も近いノードが見つからない場合は既知のノードを使用
+    // Fallback: If no closest nodes are found, use all known nodes
     let nodes = if closest_nodes.is_empty() {
         let all_nodes = table.get_all_nodes();
         tracing::info!(node_count = all_nodes.len(), "No closest nodes found, fallback to known nodes");

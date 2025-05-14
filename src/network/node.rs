@@ -128,11 +128,11 @@ impl<S: Storage, N: Network> Node<S, N> {
 
   /// Store a key-value pair in the DHT
   pub async fn store(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-    // キーのハッシュ方法を一貫性のあるものにする
-    // このメソッドを利用する側はバイナリキーを渡すが、
-    // 常に同じハッシュアルゴリズムを使用して処理する
+    // Use a consistent hashing method for the key
+    // The caller passes binary keys to this method,
+    // but we always process them using the same hash algorithm
 
-    // 人間が読めるキー形式（デバッグ用）
+    // Human-readable key format (for debugging)
     let key_str = if key.iter().all(|&b| b >= 32 && b <= 126) {
       String::from_utf8_lossy(key).to_string()
     } else {
@@ -141,10 +141,10 @@ impl<S: Storage, N: Network> Node<S, N> {
 
     tracing::info!(key = %key_str, "Storing key");
 
-    // NodeIdに変換（一貫したハッシュを使用）
+    // Convert to NodeId (using consistent hashing)
     let key_id = NodeId::from_bytes(key);
 
-    // デバッグ情報
+    // Debug information
     tracing::debug!(
       original_key = %key_str,
       key_bytes = ?key,
@@ -153,7 +153,7 @@ impl<S: Storage, N: Network> Node<S, N> {
       "Key conversion details"
     );
 
-    // 値の内容（デバッグ用）
+    // Value content (for debugging)
     let value_str = if value.iter().all(|&b| b >= 32 && b <= 126) {
       format!("\"{}\"", String::from_utf8_lossy(&value))
     } else {
@@ -163,7 +163,7 @@ impl<S: Storage, N: Network> Node<S, N> {
 
     // First, store it locally
     tracing::info!("Storing value locally");
-    // 長めのタイムアウトを設定（30秒）
+    // Set a longer timeout (30 seconds)
     let result = match tokio::time::timeout(
       Duration::from_secs(30),
       self.protocol.store_value(key_id.clone(), value.clone()),
@@ -189,7 +189,7 @@ impl<S: Storage, N: Network> Node<S, N> {
     for node in &nodes {
       if node.id != self.node_id {
         tracing::debug!(target_node = %node.id, "Directly sending STORE to node");
-        // 長めのタイムアウトを設定（30秒）
+        // Set a longer timeout (30 seconds)
         match tokio::time::timeout(
           Duration::from_secs(30),
           self.protocol.store(node, key_id.clone(), value.clone()),
@@ -209,7 +209,7 @@ impl<S: Storage, N: Network> Node<S, N> {
 
   /// Retrieve a value from the DHT by key
   pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
-    // 人間が読めるキー形式（デバッグ用）
+    // Human-readable key format (for debugging)
     let key_str = if key.iter().all(|&b| b >= 32 && b <= 126) {
       String::from_utf8_lossy(key).to_string()
     } else {
@@ -218,10 +218,10 @@ impl<S: Storage, N: Network> Node<S, N> {
 
     tracing::info!(key = %key_str, "Looking up key");
 
-    // NodeIdに変換（一貫したハッシュを使用）
+    // Convert to NodeId (using consistent hashing)
     let key_id = NodeId::from_bytes(key);
 
-    // デバッグ情報
+    // Debug information
     tracing::debug!(
       original_key = %key_str,
       key_bytes = ?key,
@@ -394,7 +394,7 @@ impl Node<MemoryStorage, UdpNetwork> {
     // Create the network with the shared storage
     let network = UdpNetwork::with_storage(addr, shared_storage).await?;
 
-    // テスト用に、ストレージの同期を確認するデバッグログを追加
+    // Add debug log to verify storage synchronization for testing
     tracing::debug!("Created node with shared storage");
 
     // Create the node

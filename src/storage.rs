@@ -165,10 +165,10 @@ impl Storage for MemoryStorage {
     tracing::debug!(storage_name = %self.debug_name, key = %key, "Storing value for key");
     let result = self.store_with_ttl(key, value, self.default_ttl);
 
-    // ストア後にストレージの状態をダンプ（デバッグ用）
+    // Dump storage state after store operation (for debugging)
     if result.is_ok() {
       tracing::debug!(storage_name = %self.debug_name, "Successfully stored value");
-      // 重要なところだけ詳細にダンプ
+      // Only dump details for important items
       if self.storage.len() < 10 {
         self.dump_storage();
       } else {
@@ -205,7 +205,7 @@ impl Storage for MemoryStorage {
       None => {
         tracing::debug!(storage_name = %self.debug_name, key = %key, "Key not found");
 
-        // キーが見つからない場合は、既存の全キーをログに出力して確認
+        // If key is not found, log all existing keys for verification
         if !self.storage.is_empty() {
           tracing::debug!(storage_name = %self.debug_name, "Available keys:");
           for stored_key in self.storage.keys() {

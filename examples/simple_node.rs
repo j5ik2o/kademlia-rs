@@ -159,7 +159,7 @@ async fn async_main() -> kademlia::Result<()> {
         }
       };
 
-      // 重要: 応答を受信するために少し待機する
+      // IMPORTANT: Wait for a short period to ensure all responses are received
       tracing::info!("Waiting for 1 second to ensure all responses are received");
       tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -198,7 +198,7 @@ async fn async_main() -> kademlia::Result<()> {
         },
       }
 
-      // 重要: 応答を受信するために少し待機する
+      // IMPORTANT: Wait for a short period to ensure all responses are received
       tracing::info!("Waiting for 1 second to ensure all responses are received");
       tokio::time::sleep(Duration::from_secs(1)).await;
 

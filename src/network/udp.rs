@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::cmp::min;
 
 use async_trait::async_trait;
 use tokio::net::UdpSocket;
@@ -207,22 +206,17 @@ impl UdpNetwork {
               success,
             }
           }
-          // Add other request types here
-          _ => {
-            println!("Unknown request type, ignoring");
-            continue;
-          }
         };
 
         // Send the response back
-        println!("Sending response to {}", from);
+        tracing::debug!(target_addr = %from, "Sending response");
         if let Err(e) = socket_clone
           .send_to(&bincode::serialize(&KademliaMessage::Response(response)).unwrap(), from)
           .await
         {
-          eprintln!("Error sending response: {}", e);
+          tracing::error!(error = %e, "Error sending response");
         } else {
-          println!("Response sent successfully to {}", from);
+          tracing::debug!(target_addr = %from, "Response sent successfully");
         }
       }
     });

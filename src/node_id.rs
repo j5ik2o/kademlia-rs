@@ -34,7 +34,7 @@ impl NodeId {
   /// Applies a consistent hash to ensure keys are always the correct length
   pub fn from_bytes(data: &[u8]) -> Self {
     // 元のバイトデータを保存
-    println!("DEBUG: Original key bytes: {:?}", data);
+    tracing::trace!(original_bytes = ?data, "Creating NodeId from bytes");
 
     // すべてのキー入力に対して常にSHA-256ハッシュを使用し、最初の20バイトを取得
     // これにより、すべてのキーが一貫した方法で処理される
@@ -43,9 +43,12 @@ impl NodeId {
     bytes.copy_from_slice(&hash_result[..KEY_LENGTH_BYTES]);
 
     // デバッグログ出力
-    println!("DEBUG: NodeId::from_bytes - Input data: {:?}", data);
-    println!("DEBUG: NodeId::from_bytes - Hash result: {:?}", &hash_result[..KEY_LENGTH_BYTES]);
-    println!("DEBUG: NodeId::from_bytes - Final NodeId: {}", hex::encode(bytes));
+    tracing::debug!(
+      input_data = ?data,
+      hash_result = ?&hash_result[..KEY_LENGTH_BYTES],
+      node_id = hex::encode(bytes),
+      "NodeId::from_bytes details"
+    );
 
     NodeId { bytes }
   }

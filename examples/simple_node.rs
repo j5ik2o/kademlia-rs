@@ -22,7 +22,8 @@ fn main() -> kademlia::Result<()> {
 }
 
 async fn async_main() -> kademlia::Result<()> {
-  env_logger::init();
+  // Initialize structured logging with tracing
+  kademlia::init_tracing();
 
   let matches = App::new("Kademlia Node")
     .version("0.1.0")
@@ -111,29 +112,29 @@ async fn async_main() -> kademlia::Result<()> {
 
   if let Some(_) = matches.subcommand_matches("bootstrap") {
     // Run as a bootstrap node
-    println!("Starting bootstrap node on {}", addr);
+    tracing::info!(node_addr = %addr, "Starting bootstrap node");
     let node = Node::with_udp(addr).await?;
     node.start().await?;
 
     // Keep the node running
-    println!("Bootstrap node running (real app). Press Ctrl+C to exit.");
+    tracing::info!("Bootstrap node running. Press Ctrl+C to exit.");
     loop {
       sleep(Duration::from_secs(1)).await;
     }
   } else if let Some(matches) = matches.subcommand_matches("join") {
     // Join an existing network
     let bootstrap_addr = matches.value_of("bootstrap").unwrap().parse::<SocketAddr>().unwrap();
-    println!("Joining network via bootstrap node {}", bootstrap_addr);
+    tracing::info!(bootstrap_addr = %bootstrap_addr, "Joining network via bootstrap node");
 
     let node = Node::with_udp(addr).await?;
     node.start().await?;
 
-    println!("Connecting to bootstrap node...");
+    tracing::info!("Connecting to bootstrap node");
     node.join(bootstrap_addr).await?;
-    println!("Successfully joined the Kademlia network.");
+    tracing::info!("Successfully joined the Kademlia network");
 
     // Keep the node running
-    println!("Node running. Press Ctrl+C to exit.");
+    tracing::info!("Node running. Press Ctrl+C to exit.");
     loop {
       sleep(Duration::from_secs(1)).await;
     }
@@ -143,17 +144,17 @@ async fn async_main() -> kademlia::Result<()> {
     let key = matches.value_of("key").unwrap();
     let value = matches.value_of("value").unwrap();
 
-    println!("Storing key-value pair: '{}' -> \"{}\"", key, value);
+    tracing::info!(key = %key, value = %value, "Storing key-value pair");
 
     let node = Node::with_udp(addr).await?;
     node.start().await?;
 
-    println!("Connecting to bootstrap node...");
+    tracing::info!("Connecting to bootstrap node");
     node.join(bootstrap_addr).await?;
-    println!("Successfully joined the Kademlia network.");
+    tracing::info!("Successfully joined the Kademlia network");
 
-    println!("Storing key-value pair...");
-    println!("Running store operation - this might take a few seconds...");
+    tracing::info!("Storing key-value pair");
+    tracing::info!("Running store operation - this might take a few seconds");
     match tokio::time::timeout(
       Duration::from_secs(10),
       node.store(key.as_bytes(), value.as_bytes().to_vec()),
@@ -161,61 +162,61 @@ async fn async_main() -> kademlia::Result<()> {
     .await
     {
       Ok(result) => match result {
-        Ok(_) => println!("Successfully stored key-value pair: '{}' -> \"{}\"", key, value),
-        Err(e) => println!("Error while storing key '{}': {:?}", key, e),
+        Ok(_) => tracing::info!(key = %key, value = %value, "Successfully stored key-value pair"),
+        Err(e) => tracing::error!(key = %key, error = ?e, "Error while storing key"),
       },
       Err(_) => {
-        println!("Storage operation timed out after 10 seconds. Continuing anyway...")
+        tracing::warn!("Storage operation timed out after 10 seconds. Continuing anyway")
       }
     };
 
     // 重要: 応答を受信するために少し待機する
-    println!("Waiting for 1 second to ensure all responses are received...");
+    tracing::info!("Waiting for 1 second to ensure all responses are received");
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Exit the program normally, allowing the runtime to shut down cleanly
-    println!("Operation completed successfully. Exiting...");
+    tracing::info!("Operation completed successfully. Exiting");
     return Ok(());
   } else if let Some(matches) = matches.subcommand_matches("get") {
     // Get a value by key
     let bootstrap_addr = matches.value_of("bootstrap").unwrap().parse::<SocketAddr>().unwrap();
     let key = matches.value_of("key").unwrap();
 
-    println!("Looking up key: {}", key);
+    tracing::info!(key = %key, "Looking up key");
 
     let node = Node::with_udp(addr).await?;
     node.start().await?;
 
-    println!("Connecting to bootstrap node...");
+    tracing::info!("Connecting to bootstrap node");
     node.join(bootstrap_addr).await?;
-    println!("Successfully joined the Kademlia network.");
+    tracing::info!("Successfully joined the Kademlia network");
 
-    println!("Looking up key...");
-    println!("Running lookup operation - this might take a few seconds...");
+    tracing::info!("Looking up key");
+    tracing::info!("Running lookup operation - this might take a few seconds");
     match tokio::time::timeout(Duration::from_secs(10), node.get(key.as_bytes())).await {
       Ok(result) => match result {
         Ok(value) => {
           let value_str = String::from_utf8_lossy(&value);
-          println!("Found value for key '{}': \"{}\"", key, value_str);
+          tracing::info!(key = %key, value = %value_str, "Found value for key");
         }
         Err(e) => {
-          println!("Error looking up key '{}': {}", key, e);
+          tracing::warn!(key = %key, error = %e, "Value not found for key");
         }
       },
       Err(_) => {
-        println!("Lookup operation timed out after 10 seconds. Continuing anyway...");
+        tracing::warn!("Lookup operation timed out after 10 seconds. Continuing anyway");
       },
     }
 
     // 重要: 応答を受信するために少し待機する
-    println!("Waiting for 1 second to ensure all responses are received...");
+    tracing::info!("Waiting for 1 second to ensure all responses are received");
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Exit the program normally, allowing the runtime to shut down cleanly
-    println!("Operation completed successfully. Exiting...");
+    tracing::info!("Operation completed successfully. Exiting");
     return Ok(());
   } else {
-    println!("Please specify a subcommand. Use --help for more information.");
+    tracing::warn!("Please specify a subcommand. Use --help for more information.");
     Ok(())
   }
 }

@@ -103,7 +103,12 @@ impl MemoryStorage {
 
   /// Debug method to dump all stored values
   pub fn dump_storage(&self) {
-    println!("===== Storage dump for '{}' ({} items) =====", self.debug_name, self.storage.len());
+    tracing::debug!(
+      storage_name = %self.debug_name,
+      items_count = self.storage.len(),
+      "===== Storage dump start ====="
+    );
+
     for (key, entry) in &self.storage {
       let value_preview = if entry.value.len() > 20 {
         format!("{:?}... ({} bytes)", &entry.value[0..20], entry.value.len())
@@ -111,9 +116,10 @@ impl MemoryStorage {
         format!("{:?}", entry.value)
       };
 
-      println!("Key: {} -> Value: {}", key, value_preview);
+      tracing::debug!(key = %key, value = %value_preview, "Storage entry");
     }
-    println!("===== End of storage dump =====");
+
+    tracing::debug!(storage_name = %self.debug_name, "===== Storage dump end =====");
   }
 
   /// Clean up expired entries
@@ -156,18 +162,21 @@ impl MemoryStorage {
 
 impl Storage for MemoryStorage {
   fn store(&mut self, key: &NodeId, value: Vec<u8>) -> Result<()> {
-    println!("DEBUG: MemoryStorage({}): Storing value for key: {}", self.debug_name, key);
+    tracing::debug!(storage_name = %self.debug_name, key = %key, "Storing value for key");
     let result = self.store_with_ttl(key, value, self.default_ttl);
 
     // ストア後にストレージの状態をダンプ（デバッグ用）
     if result.is_ok() {
-      println!("DEBUG: MemoryStorage({}): Successfully stored value", self.debug_name);
+      tracing::debug!(storage_name = %self.debug_name, "Successfully stored value");
       // 重要なところだけ詳細にダンプ
       if self.storage.len() < 10 {
         self.dump_storage();
       } else {
-        println!("DEBUG: MemoryStorage({}): Storage contains {} items",
-                 self.debug_name, self.storage.len());
+        tracing::debug!(
+          storage_name = %self.debug_name,
+          items_count = self.storage.len(),
+          "Storage contains items"
+        );
       }
     }
 
@@ -175,29 +184,32 @@ impl Storage for MemoryStorage {
   }
 
   fn get(&mut self, key: &NodeId) -> Result<Vec<u8>> {
-    println!("DEBUG: MemoryStorage({}): Looking up key: {}", self.debug_name, key);
+    tracing::debug!(storage_name = %self.debug_name, key = %key, "Looking up key");
 
     match self.storage.get(key) {
       Some(entry) => {
         let now = Instant::now();
         if entry.timestamp + entry.ttl > now {
-          println!("DEBUG: MemoryStorage({}): Found value for key: {} (size: {} bytes)",
-                   self.debug_name, key, entry.value.len());
+          tracing::debug!(
+            storage_name = %self.debug_name,
+            key = %key,
+            value_size = entry.value.len(),
+            "Found value for key"
+          );
           Ok(entry.value.clone())
         } else {
-          println!("DEBUG: MemoryStorage({}): Key found but entry expired: {}",
-                   self.debug_name, key);
+          tracing::debug!(storage_name = %self.debug_name, key = %key, "Key found but entry expired");
           Err(Error::ValueNotFound)
         }
       }
       None => {
-        println!("DEBUG: MemoryStorage({}): Key not found: {}", self.debug_name, key);
+        tracing::debug!(storage_name = %self.debug_name, key = %key, "Key not found");
 
         // キーが見つからない場合は、既存の全キーをログに出力して確認
         if !self.storage.is_empty() {
-          println!("DEBUG: MemoryStorage({}): Available keys:", self.debug_name);
+          tracing::debug!(storage_name = %self.debug_name, "Available keys:");
           for stored_key in self.storage.keys() {
-            println!("  - {}", stored_key);
+            tracing::trace!("  - {}", stored_key);
           }
         }
 
@@ -275,7 +287,11 @@ impl Storage for DualStorage {
         match value_opt {
           Some(value) => {
             // Also update memory storage for future faster lookups
-            println!("DEBUG: DualStorage: Value found in shared storage but not in memory, syncing");
+            tracing::debug!(
+              storage_name = %self.memory_storage.debug_name,
+              key = %key,
+              "Value found in shared storage but not in memory, syncing"
+            );
             // Store directly since we have a mutable self
             let _ = self.memory_storage.store(key, value.clone());
             Ok(value)

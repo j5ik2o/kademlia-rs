@@ -431,18 +431,18 @@ where
   /// Find a value by key
   pub async fn find_value(&self, key: &NodeId) -> Result<Option<Vec<u8>>> {
     // デバッグ: 検索しているキーの情報を表示
-    println!("DEBUG: Looking for key in find_value: {} (hex: {})", key, key.to_hex());
+    tracing::debug!(key = %key, key_hex = %key.to_hex(), "Looking for key in find_value");
 
     // First check if we have the value locally
     {
       let mut storage = self.storage.write().await;
       if let Ok(value) = storage.get(key) {
-        println!("Value found in local node storage");
+        tracing::info!("Value found in local node storage");
         return Ok(Some(value));
       }
     }
 
-    println!("Value not found locally, initiating network search");
+    tracing::info!("Value not found locally, initiating network search");
 
     // 改善: より効率的なKademlia検索アルゴリズムを実装
     // キーに近いノードから順に検索し、さらに近いノードが見つかったら探索を継続
@@ -456,16 +456,16 @@ where
         if nodes.is_empty() {
             // もし最も近いノードが見つからない場合は、既知のすべてのノードを使用
             nodes = table.get_all_nodes();
-            println!("No closest nodes found, using all {} known nodes", nodes.len());
+            tracing::info!(node_count = nodes.len(), "No closest nodes found, using all known nodes");
         } else {
-            println!("Found {} closest nodes to key {}", nodes.len(), key);
+            tracing::info!(node_count = nodes.len(), key = %key, "Found closest nodes to key");
         }
 
         nodes
     };
 
     if closest_nodes.is_empty() {
-      println!("Warning: No known nodes to query. Make sure you've joined the network.");
+      tracing::warn!("No known nodes to query. Make sure you've joined the network.");
       return Ok(None);
     }
 
@@ -477,7 +477,7 @@ where
     const MAX_ITERATIONS: usize = 10;
 
     for iteration in 0..MAX_ITERATIONS {
-        println!("Find value iteration {}, checking {} nodes", iteration, closest_nodes.len());
+        tracing::debug!(iteration = iteration, node_count = closest_nodes.len(), "Find value iteration");
 
         // このイテレーションですでに訪問済みのノードをフィルタリング
         let nodes_to_query: Vec<Node> = closest_nodes.iter()
@@ -487,7 +487,7 @@ where
             .collect();
 
         if nodes_to_query.is_empty() {
-            println!("No more nodes to query in iteration {}", iteration);
+            tracing::debug!(iteration = iteration, "No more nodes to query in iteration");
             break;
         }
 
@@ -495,7 +495,7 @@ where
         let mut tasks = Vec::new();
         for node in &nodes_to_query {
             visited.insert(node.id.clone());
-            println!("Querying node: {}", node.id);
+            tracing::debug!(node_id = %node.id, "Querying node");
 
             // 各ノードにRPCを発行するタスクを作成
             let node_clone = node.clone();
@@ -521,7 +521,7 @@ where
                 match protocol.find_value_rpc(&node_clone, key_clone).await {
                     Ok(result) => Some((node_clone, result)),
                     Err(_) => {
-                        println!("Error or timeout querying node {}", node_clone.id);
+                        tracing::warn!(node_id = %node_clone.id, "Error or timeout querying node");
                         None
                     }
                 }
@@ -530,12 +530,12 @@ where
 
         // すべてのクエリの結果を待機
         let mut all_closest_nodes = Vec::new();
-        let mut value_found = false;
+        let value_found = false;
 
         for task in tasks {
             if let Ok(Some((node, (maybe_value, more_nodes)))) = task.await {
                 if let Some(value) = maybe_value {
-                    println!("Found value on node: {}", node.id);
+                    tracing::info!(node_id = %node.id, "Found value on node");
 
                     // 値をローカルにキャッシュ
                     {
@@ -543,10 +543,14 @@ where
                         let _ = storage.store(key, value.clone());
                     }
 
-                    println!("Value retrieved from node: {}", node.id);
+                    tracing::info!(node_id = %node.id, "Value retrieved from node");
                     return Ok(Some(value));
                 } else {
-                    println!("Node {} returned {} closest nodes", node.id, more_nodes.len());
+                    tracing::debug!(
+                        node_id = %node.id,
+                        closest_nodes = more_nodes.len(),
+                        "Node returned closest nodes"
+                    );
                     // 新しく見つかったノードを追加
                     for n in more_nodes {
                         if !visited.contains(&n.id) {
@@ -559,7 +563,7 @@ where
 
         // 値が見つからなかった場合は、新しく見つかったノードを追加して続行
         if !value_found && !all_closest_nodes.is_empty() {
-            println!("Added {} new nodes for next iteration", all_closest_nodes.len());
+            tracing::debug!(new_nodes = all_closest_nodes.len(), "Added new nodes for next iteration");
             closest_nodes.extend(all_closest_nodes);
 
             // XOR距離でソートしてK個のノードに絞る
@@ -574,13 +578,13 @@ where
             }
         } else if !value_found {
             // 新しいノードが見つからなくなったら終了
-            println!("No new nodes found, stopping search");
+            tracing::debug!("No new nodes found, stopping search");
             break;
         }
     }
 
     // Not found anywhere
-    println!("Value not found in the network after exhaustive search");
+    tracing::warn!("Value not found in the network after exhaustive search");
     Ok(None)
   }
 
@@ -607,7 +611,7 @@ where
     match timeout(extended_timeout, self.network.wait_response(id, RPC_TIMEOUT)).await {
       Ok(result) => {
         let response = result?;
-        println!("DEBUG: Received response in find_value_rpc: {:?}", response);
+        tracing::debug!(response = ?response, "Received response in find_value_rpc");
 
         // Update routing table with the responding node
         {
@@ -623,20 +627,26 @@ where
 
         match response {
           ResponseMessage::ValueFound { value, nodes, .. } => {
-            println!("DEBUG: find_value_rpc received ValueFound response: value is {:?}, nodes count: {}",
-                    value.is_some(), nodes.len());
+            tracing::debug!(
+                has_value = value.is_some(),
+                nodes_count = nodes.len(),
+                "find_value_rpc received ValueFound response"
+            );
             if let Some(ref v) = value {
-              println!("DEBUG: Value content: {:?}", String::from_utf8_lossy(v));
+              tracing::trace!(
+                value_content = %String::from_utf8_lossy(v),
+                "Value content details"
+              );
             }
             Ok((value, nodes))
           },
           ResponseMessage::NodesFound { nodes, .. } => {
-            println!("DEBUG: find_value_rpc received NodesFound response with {} nodes", nodes.len());
+            tracing::debug!(nodes_count = nodes.len(), "find_value_rpc received NodesFound response");
             // 値が見つからなかった場合は、ノードのリストを返す
             Ok((None, nodes))
           },
           _ => {
-            println!("DEBUG: find_value_rpc received unexpected response type");
+            tracing::warn!("find_value_rpc received unexpected response type");
             // 予期しないレスポンスタイプの場合でも、空のノードリストを返す
             Ok((None, vec![]))
           }
@@ -644,7 +654,7 @@ where
       }
       Err(e) => {
         // Timeout, clean up and return error
-        println!("DEBUG: find_value_rpc timed out: {:?}", e);
+        tracing::warn!(error = ?e, "find_value_rpc timed out");
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
@@ -664,47 +674,47 @@ where
       storage.store(&key, value.clone())?;
     }
 
-    println!("Stored value locally for key {}", key);
+    tracing::info!(key = %key, "Stored value locally for key");
 
     // 修正：キーに対してK個の最も近いノードを見つける（Kademliaプロトコルに準拠）
     let table = self.routing_table.read().await;
 
     // まず、キーに最も近いK個のノードを取得（理想的なKademlia実装）
     let closest_nodes = table.get_closest(&key, K);
-    println!("Found {} closest nodes to key {}", closest_nodes.len(), key);
+    tracing::info!(node_count = closest_nodes.len(), key = %key, "Found closest nodes to key");
 
     // フォールバック：もし最も近いノードが見つからない場合は既知のノードを使用
     let nodes = if closest_nodes.is_empty() {
         let all_nodes = table.get_all_nodes();
-        println!("No closest nodes found, fallback to {} known nodes", all_nodes.len());
+        tracing::info!(node_count = all_nodes.len(), "No closest nodes found, fallback to known nodes");
         all_nodes
     } else {
         closest_nodes
     };
 
-    println!("Attempting to store on {} nodes", nodes.len());
+    tracing::info!(node_count = nodes.len(), "Attempting to store on nodes");
 
     if nodes.is_empty() {
-      println!("Warning: No known nodes to store value on. Store only locally.");
+      tracing::warn!("No known nodes to store value on. Store only locally.");
     } else {
       // Store on K closest nodes or all known nodes if we have fewer than K
       for node in nodes {
         if node.id != self.node_id {
-          println!("Storing value on node: {}", node.id);
+          tracing::debug!(node_id = %node.id, "Storing value on node");
           // Longer timeout for reliability
           match tokio::time::timeout(Duration::from_secs(20), self.store(&node, key.clone(), value.clone())).await {
             Ok(Ok(response)) => match response {
               ResponseMessage::StoreResult { success, .. } => {
-                println!(
-                  "Store result from node {}: {}",
-                  node.id,
-                  if success { "SUCCESS" } else { "FAILED" }
+                tracing::debug!(
+                  node_id = %node.id,
+                  success = success,
+                  "Store result from node"
                 );
               }
-              _ => println!("Unexpected response from store operation"),
+              _ => tracing::warn!("Unexpected response from store operation"),
             },
-            Ok(Err(e)) => println!("Error storing on node {}: {:?}", node.id, e),
-            Err(_) => println!("Timeout storing on node {}", node.id),
+            Ok(Err(e)) => tracing::warn!(node_id = %node.id, error = ?e, "Error storing on node"),
+            Err(_) => tracing::warn!(node_id = %node.id, "Timeout storing on node"),
           }
         }
       }

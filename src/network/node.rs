@@ -116,7 +116,7 @@ impl<S: Storage, N: Network> Node<S, N> {
     // This is a simplified implementation - in a real system we would:
     // 1. Set up request handlers for incoming network messages
     // 2. Start background maintenance tasks
-    println!("Node started on {}", self.addr);
+    tracing::info!(node_addr = %self.addr, "Node started");
 
     Ok(())
   }
@@ -139,14 +139,19 @@ impl<S: Storage, N: Network> Node<S, N> {
       format!("<binary key of length {}>", key.len())
     };
 
-    println!("Storing key: \"{}\"", key_str);
+    tracing::info!(key = %key_str, "Storing key");
 
     // NodeIdに変換（一貫したハッシュを使用）
     let key_id = NodeId::from_bytes(key);
 
     // デバッグ情報
-    println!("DEBUG: Original key: \"{}\" (bytes: {:?})", key_str, key);
-    println!("DEBUG: Hashed key ID: {} (hex: {})", key_id, key_id.to_hex());
+    tracing::debug!(
+      original_key = %key_str,
+      key_bytes = ?key,
+      hashed_key_id = %key_id,
+      key_hex = %key_id.to_hex(),
+      "Key conversion details"
+    );
 
     // 値の内容（デバッグ用）
     let value_str = if value.iter().all(|&b| b >= 32 && b <= 126) {
@@ -154,10 +159,10 @@ impl<S: Storage, N: Network> Node<S, N> {
     } else {
       format!("<binary data of length {}>", value.len())
     };
-    println!("DEBUG: Value content: {}", value_str);
+    tracing::debug!(value_content = %value_str, "Value details");
 
     // First, store it locally
-    println!("Storing value locally...");
+    tracing::info!("Storing value locally");
     // 長めのタイムアウトを設定（30秒）
     let result = match tokio::time::timeout(
       Duration::from_secs(30),
@@ -166,24 +171,24 @@ impl<S: Storage, N: Network> Node<S, N> {
     .await
     {
       Ok(r) => {
-        println!("Local store operation completed");
+        tracing::info!("Local store operation completed");
         r
       }
       Err(_) => {
-        println!("Local store operation timed out, but continuing...");
+        tracing::warn!("Local store operation timed out, but continuing");
         Ok(())
       }
     };
 
     // Also ensure it's stored on bootstrap nodes by directly sending to known nodes
-    println!("Getting nodes from routing table...");
+    tracing::debug!("Getting nodes from routing table");
     let table = self.routing_table.read().await;
     let nodes = table.get_all_nodes();
 
-    println!("Additionally sending STORE to {} nodes in routing table", nodes.len());
+    tracing::info!(node_count = nodes.len(), "Additionally sending STORE to nodes in routing table");
     for node in &nodes {
       if node.id != self.node_id {
-        println!("Directly sending STORE to node: {}", node.id);
+        tracing::debug!(target_node = %node.id, "Directly sending STORE to node");
         // 長めのタイムアウトを設定（30秒）
         match tokio::time::timeout(
           Duration::from_secs(30),
@@ -191,14 +196,14 @@ impl<S: Storage, N: Network> Node<S, N> {
         )
         .await
         {
-          Ok(Ok(_)) => println!("Successfully stored on node: {}", node.id),
-          Ok(Err(e)) => println!("Failed to store on node {}: {:?}", node.id, e),
-          Err(_) => println!("Timeout storing on node {}", node.id),
+          Ok(Ok(_)) => tracing::debug!(node_id = %node.id, "Successfully stored on node"),
+          Ok(Err(e)) => tracing::warn!(node_id = %node.id, error = ?e, "Failed to store on node"),
+          Err(_) => tracing::warn!(node_id = %node.id, "Timeout storing on node"),
         }
       }
     }
 
-    println!("Store operation complete");
+    tracing::info!("Store operation complete");
     result
   }
 
@@ -211,30 +216,35 @@ impl<S: Storage, N: Network> Node<S, N> {
       format!("<binary key of length {}>", key.len())
     };
 
-    println!("Looking up key: \"{}\"", key_str);
+    tracing::info!(key = %key_str, "Looking up key");
 
     // NodeIdに変換（一貫したハッシュを使用）
     let key_id = NodeId::from_bytes(key);
 
     // デバッグ情報
-    println!("DEBUG: Original key: \"{}\" (bytes: {:?})", key_str, key);
-    println!("DEBUG: Hashed key ID for lookup: {} (hex: {})", key_id, key_id.to_hex());
+    tracing::debug!(
+      original_key = %key_str,
+      key_bytes = ?key,
+      hashed_key_id = %key_id,
+      key_hex = %key_id.to_hex(),
+      "Key conversion details for lookup"
+    );
 
     // プロトコルのfind_valueメソッドを呼び出す（タイムアウトなし）
-    println!("Looking up value through protocol...");
+    tracing::info!("Looking up value through protocol");
     let find_result = self.protocol.find_value(&key_id).await;
 
     match find_result {
       Ok(Some(value)) => {
-        println!("Found value through protocol find_value");
+        tracing::info!("Found value through protocol find_value");
         return Ok(value);
       }
       _ => {
-        println!("Value not found via protocol find_value");
+        tracing::warn!("Value not found via protocol find_value");
       }
     }
 
-    println!("Value not found anywhere");
+    tracing::warn!("Value not found anywhere");
     Err(Error::ValueNotFound)
   }
 
@@ -247,35 +257,40 @@ impl<S: Storage, N: Network> Node<S, N> {
     {
       let mut table = self.routing_table.write().await;
       let _ = table.update(bootstrap_node.clone());
-      println!("First added bootstrap node directly to routing table");
+      tracing::info!("First added bootstrap node directly to routing table");
     }
 
     // Ping the bootstrap node to validate it
     match self.protocol.ping(&bootstrap_node).await {
       Ok(response) => {
-        println!("Bootstrap node responded: {}", response.sender().id);
+        tracing::info!(bootstrap_id = %response.sender().id, "Bootstrap node responded");
 
         // Manually update our routing table with the bootstrap node from response
         {
           let mut table = self.routing_table.write().await;
           let _ = table.update(response.sender().clone());
           let node_count = table.node_count();
-          println!(
-            "Then added bootstrap node from response to routing table. Total nodes: {}",
-            node_count
+          tracing::info!(
+            node_count = node_count,
+            "Then added bootstrap node from response to routing table"
           );
 
           // Debug: Print all nodes
           let all_nodes = table.get_all_nodes();
-          println!("Current routing table has {} nodes:", all_nodes.len());
+          tracing::debug!(node_count = all_nodes.len(), "Current routing table");
           for (i, node) in all_nodes.iter().enumerate() {
-            println!("  Node {}: {} at {}", i + 1, node.id, node.addr);
+            tracing::debug!(
+              index = i + 1,
+              node_id = %node.id,
+              node_addr = %node.addr,
+              "Routing table entry"
+            );
           }
         }
 
         // Find the closest nodes to ourselves to populate our routing table
         let closest = self.protocol.find_node(&self.node_id).await?;
-        println!("Found {} closest nodes to self", closest.len());
+        tracing::info!(node_count = closest.len(), "Found closest nodes to self");
 
         Ok(())
       }
@@ -380,7 +395,7 @@ impl Node<MemoryStorage, UdpNetwork> {
     let network = UdpNetwork::with_storage(addr, shared_storage).await?;
 
     // テスト用に、ストレージの同期を確認するデバッグログを追加
-    println!("DEBUG: Created node with shared storage");
+    tracing::debug!("Created node with shared storage");
 
     // Create the node
     Ok(Node::new(node_id, addr, storage, network))

@@ -7,4 +7,6 @@ pub mod routing;
 pub mod storage;
 
 pub use error::Error;
+pub use storage::Storage;
+pub use storage::MemoryStorage;
 pub type Result<T> = std::result::Result<T, Error>;

@@ -180,7 +180,7 @@ impl UdpNetwork {
             let mut storage_lock = storage_clone.lock().await;
 
             // デバッグ: 保存前のストレージの内容を表示
-            println!("DEBUG: Storage contents before insert:");
+            println!("DEBUG: UDP Network Storage contents before insert:");
             for (k, v) in storage_lock.iter() {
               println!("DEBUG: Key: {} (hex: {}), Value length: {}", k, k.to_hex(), v.len());
             }
@@ -189,8 +189,11 @@ impl UdpNetwork {
             storage_lock.insert(key.clone(), value.clone());
             let success = true;
 
+            // メッセージ送信元をJSONでシリアライズして格納しておくと便利かも
+            println!("DEBUG: UDP Network: Stored value from {} for key {}", from, key);
+
             // デバッグ: 保存後のストレージの内容を表示
-            println!("DEBUG: Storage contents after insert:");
+            println!("DEBUG: UDP Network Storage contents after insert:");
             for (k, v) in storage_lock.iter() {
               println!("DEBUG: Key: {} (hex: {}), Value length: {}", k, k.to_hex(), v.len());
             }

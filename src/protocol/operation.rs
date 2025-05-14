@@ -15,10 +15,10 @@ use crate::storage::Storage;
 use crate::{Error, Result};
 
 /// Maximum concurrent RPCs during a node lookup
-const ALPHA: usize = 3;
+const ALPHA: usize = 5;
 
 /// Default timeout for RPC operations
-const RPC_TIMEOUT: Duration = Duration::from_secs(20);
+const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Protocol handler for Kademlia operations
 pub struct Protocol<S, N>
@@ -158,7 +158,7 @@ where
   async fn handle_find_value(&self, id: MessageId, _sender: Node, key: NodeId, from: SocketAddr) -> Result<()> {
     // Check if we have the value locally
     let value_opt = {
-      let storage = self.storage.read().await;
+      let mut storage = self.storage.write().await;
       storage.get(&key).ok()
     };
 
@@ -435,93 +435,152 @@ where
 
     // First check if we have the value locally
     {
-      let storage = self.storage.read().await;
+      let mut storage = self.storage.write().await;
       if let Ok(value) = storage.get(key) {
         println!("Value found in local node storage");
         return Ok(Some(value));
       }
     }
 
-    // Local value not found, now we'll check other nodes
+    println!("Value not found locally, initiating network search");
 
-    // If not found locally, check other nodes
-    // This is a simplification - in a real Kademlia DHT, we would use the iterative find algorithm
-    let table = self.routing_table.read().await;
-    let nodes = table.get_all_nodes();
+    // 改善: より効率的なKademlia検索アルゴリズムを実装
+    // キーに近いノードから順に検索し、さらに近いノードが見つかったら探索を継続
 
-    println!("Value not found locally, checking {} other nodes", nodes.len());
+    // 初期検索に使用するノードのセット
+    let mut closest_nodes = {
+        let table = self.routing_table.read().await;
+        // キーに最も近いK個のノードをまず探します
+        let mut nodes = table.get_closest(key, K);
 
-    if nodes.is_empty() {
+        if nodes.is_empty() {
+            // もし最も近いノードが見つからない場合は、既知のすべてのノードを使用
+            nodes = table.get_all_nodes();
+            println!("No closest nodes found, using all {} known nodes", nodes.len());
+        } else {
+            println!("Found {} closest nodes to key {}", nodes.len(), key);
+        }
+
+        nodes
+    };
+
+    if closest_nodes.is_empty() {
       println!("Warning: No known nodes to query. Make sure you've joined the network.");
       return Ok(None);
     }
 
-    // Try to get the value from all known nodes
-    for node in &nodes {
-      if node.id != self.node_id {
-        println!("Checking for value on node: {}", node.id);
+    // すでに訪問したノードを追跡
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(self.node_id.clone());
 
-        // Send a FIND_VALUE request to the node with timeout
-        // find_value_rpcを呼び出し、結果を処理
-        if let Ok(result) = self.find_value_rpc(&node, key.clone()).await {
-          match result {
-            (Some(value), _) => {
-              println!("Found value on node: {}", node.id);
+    // 探索を続ける最大イテレーション数
+    const MAX_ITERATIONS: usize = 10;
 
-              // Store the value locally for caching
-              {
-                let mut storage = self.storage.write().await;
-                let _ = storage.store(key, value.clone());
-              }
+    for iteration in 0..MAX_ITERATIONS {
+        println!("Find value iteration {}, checking {} nodes", iteration, closest_nodes.len());
 
-              println!("Value retrieved from remote node: {}", node.id);
+        // このイテレーションですでに訪問済みのノードをフィルタリング
+        let nodes_to_query: Vec<Node> = closest_nodes.iter()
+            .filter(|node| !visited.contains(&node.id) && node.id != self.node_id)
+            .take(ALPHA) // 一度に最大ALPHA個のノードを並行クエリ
+            .cloned()
+            .collect();
 
-              return Ok(Some(value));
-            }
-            (None, closest_nodes) => {
-              println!(
-                "Node {} returned {} closest nodes instead of value",
-                node.id,
-                closest_nodes.len()
-              );
-
-              // Check these closest nodes as well
-              let checked_ids: Vec<NodeId> = nodes.iter().map(|n| n.id.clone()).collect();
-              for closest in closest_nodes {
-                if closest.id != self.node_id && !checked_ids.contains(&closest.id) {
-                  println!("Checking closest node: {}", closest.id);
-
-                  // find_value_rpcを呼び出し、結果を処理
-                  if let Ok(closest_result) = self.find_value_rpc(&closest, key.clone()).await {
-                    match closest_result {
-                      (Some(value), _) => {
-                        println!("Found value on closest node: {}", closest.id);
-
-                        // Cache the value locally
-                        {
-                          let mut storage = self.storage.write().await;
-                          let _ = storage.store(key, value.clone());
-                        }
-
-                        return Ok(Some(value));
-                      }
-                      _ => println!("Value not found on closest node: {}", closest.id),
-                    }
-                  } else {
-                    println!("Error or timeout querying closest node {}", closest.id);
-                  }
-                }
-              }
-            }
-          }
-        } else {
-          println!("Error or timeout querying node {}", node.id);
+        if nodes_to_query.is_empty() {
+            println!("No more nodes to query in iteration {}", iteration);
+            break;
         }
-      }
+
+        // 並行して複数のノードにクエリを送信
+        let mut tasks = Vec::new();
+        for node in &nodes_to_query {
+            visited.insert(node.id.clone());
+            println!("Querying node: {}", node.id);
+
+            // 各ノードにRPCを発行するタスクを作成
+            let node_clone = node.clone();
+            let key_clone = key.clone();
+            // self.cloneの代わりに必要なものだけコピー
+            let network = self.network.clone();
+            let storage = self.storage.clone();
+            let routing_table = self.routing_table.clone();
+            let pending_requests = self.pending_requests.clone();
+            let node_id = self.node_id.clone();
+            let addr = self.addr.clone();
+
+            tasks.push(tokio::spawn(async move {
+                // 新しいProtocolインスタンスを作成
+                let protocol = Protocol {
+                    node_id,
+                    addr,
+                    storage,
+                    network,
+                    routing_table,
+                    pending_requests
+                };
+                match protocol.find_value_rpc(&node_clone, key_clone).await {
+                    Ok(result) => Some((node_clone, result)),
+                    Err(_) => {
+                        println!("Error or timeout querying node {}", node_clone.id);
+                        None
+                    }
+                }
+            }));
+        }
+
+        // すべてのクエリの結果を待機
+        let mut all_closest_nodes = Vec::new();
+        let mut value_found = false;
+
+        for task in tasks {
+            if let Ok(Some((node, (maybe_value, more_nodes)))) = task.await {
+                if let Some(value) = maybe_value {
+                    println!("Found value on node: {}", node.id);
+
+                    // 値をローカルにキャッシュ
+                    {
+                        let mut storage = self.storage.write().await;
+                        let _ = storage.store(key, value.clone());
+                    }
+
+                    println!("Value retrieved from node: {}", node.id);
+                    return Ok(Some(value));
+                } else {
+                    println!("Node {} returned {} closest nodes", node.id, more_nodes.len());
+                    // 新しく見つかったノードを追加
+                    for n in more_nodes {
+                        if !visited.contains(&n.id) {
+                            all_closest_nodes.push(n);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 値が見つからなかった場合は、新しく見つかったノードを追加して続行
+        if !value_found && !all_closest_nodes.is_empty() {
+            println!("Added {} new nodes for next iteration", all_closest_nodes.len());
+            closest_nodes.extend(all_closest_nodes);
+
+            // XOR距離でソートしてK個のノードに絞る
+            closest_nodes.sort_by(|a, b| {
+                let dist_a = key.distance(&a.id);
+                let dist_b = key.distance(&b.id);
+                dist_a.cmp(&dist_b)
+            });
+
+            if closest_nodes.len() > K {
+                closest_nodes.truncate(K);
+            }
+        } else if !value_found {
+            // 新しいノードが見つからなくなったら終了
+            println!("No new nodes found, stopping search");
+            break;
+        }
     }
 
     // Not found anywhere
-    println!("Value not found in the network");
+    println!("Value not found in the network after exhaustive search");
     Ok(None)
   }
 
@@ -607,21 +666,33 @@ where
 
     println!("Stored value locally for key {}", key);
 
-    // Always store on bootstrap node if we have joined
+    // 修正：キーに対してK個の最も近いノードを見つける（Kademliaプロトコルに準拠）
     let table = self.routing_table.read().await;
-    let nodes = table.get_all_nodes();
 
-    println!("Attempting to store on {} known nodes", nodes.len());
+    // まず、キーに最も近いK個のノードを取得（理想的なKademlia実装）
+    let closest_nodes = table.get_closest(&key, K);
+    println!("Found {} closest nodes to key {}", closest_nodes.len(), key);
+
+    // フォールバック：もし最も近いノードが見つからない場合は既知のノードを使用
+    let nodes = if closest_nodes.is_empty() {
+        let all_nodes = table.get_all_nodes();
+        println!("No closest nodes found, fallback to {} known nodes", all_nodes.len());
+        all_nodes
+    } else {
+        closest_nodes
+    };
+
+    println!("Attempting to store on {} nodes", nodes.len());
 
     if nodes.is_empty() {
       println!("Warning: No known nodes to store value on. Store only locally.");
     } else {
-      // Store on all known nodes (in a real implementation this would be more selective)
+      // Store on K closest nodes or all known nodes if we have fewer than K
       for node in nodes {
         if node.id != self.node_id {
           println!("Storing value on node: {}", node.id);
-          // Add a timeout to each store operation to prevent hanging
-          match tokio::time::timeout(Duration::from_secs(5), self.store(&node, key.clone(), value.clone())).await {
+          // Longer timeout for reliability
+          match tokio::time::timeout(Duration::from_secs(20), self.store(&node, key.clone(), value.clone())).await {
             Ok(Ok(response)) => match response {
               ResponseMessage::StoreResult { success, .. } => {
                 println!(

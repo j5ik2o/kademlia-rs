@@ -72,7 +72,7 @@ impl MemoryStorage {
       debug_name: "default".to_string(),
     }
   }
-
+  
   /// Create a new memory storage with a specific name (for debugging)
   pub fn with_name(name: &str) -> Self {
     MemoryStorage {
@@ -81,7 +81,7 @@ impl MemoryStorage {
       debug_name: name.to_string(),
     }
   }
-
+  
   /// Create a new memory storage with both name and TTL
   pub fn with_name_and_ttl(name: &str, ttl: Duration) -> Self {
     MemoryStorage {
@@ -90,17 +90,17 @@ impl MemoryStorage {
       debug_name: name.to_string(),
     }
   }
-
+  
   /// Get all stored keys
   pub fn get_all_keys(&self) -> Vec<NodeId> {
     self.storage.keys().cloned().collect()
   }
-
+  
   /// Get iterator over all stored items
   pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &Vec<u8>)> {
     self.storage.iter().map(|(k, entry)| (k, &entry.value))
   }
-
+  
   /// Debug method to dump all stored values
   pub fn dump_storage(&self) {
     println!("===== Storage dump for '{}' ({} items) =====", self.debug_name, self.storage.len());
@@ -110,7 +110,7 @@ impl MemoryStorage {
       } else {
         format!("{:?}", entry.value)
       };
-
+      
       println!("Key: {} -> Value: {}", key, value_preview);
     }
     println!("===== End of storage dump =====");
@@ -133,12 +133,12 @@ impl MemoryStorage {
     self.storage.insert(key.clone(), entry);
     Ok(())
   }
-
+  
   /// Create a new shared memory storage backed by this instance
   pub fn create_shared(&self) -> (Arc<tokio::sync::Mutex<HashMap<NodeId, Vec<u8>>>>, String) {
     let shared_storage = Arc::new(tokio::sync::Mutex::new(HashMap::<NodeId, Vec<u8>>::new()));
     let debug_name = self.debug_name.clone();
-
+    
     // Clone the storage data for initial state
     for (key, entry) in &self.storage {
       let key_clone = key.clone();
@@ -149,7 +149,7 @@ impl MemoryStorage {
         storage.insert(key_clone, value_clone);
       });
     }
-
+    
     (shared_storage, debug_name)
   }
 }
@@ -158,7 +158,7 @@ impl Storage for MemoryStorage {
   fn store(&mut self, key: &NodeId, value: Vec<u8>) -> Result<()> {
     println!("DEBUG: MemoryStorage({}): Storing value for key: {}", self.debug_name, key);
     let result = self.store_with_ttl(key, value, self.default_ttl);
-
+    
     // ストア後にストレージの状態をダンプ（デバッグ用）
     if result.is_ok() {
       println!("DEBUG: MemoryStorage({}): Successfully stored value", self.debug_name);
@@ -166,33 +166,33 @@ impl Storage for MemoryStorage {
       if self.storage.len() < 10 {
         self.dump_storage();
       } else {
-        println!("DEBUG: MemoryStorage({}): Storage contains {} items",
+        println!("DEBUG: MemoryStorage({}): Storage contains {} items", 
                  self.debug_name, self.storage.len());
       }
     }
-
+    
     result
   }
-
+  
   fn get(&mut self, key: &NodeId) -> Result<Vec<u8>> {
     println!("DEBUG: MemoryStorage({}): Looking up key: {}", self.debug_name, key);
-
+    
     match self.storage.get(key) {
       Some(entry) => {
         let now = Instant::now();
         if entry.timestamp + entry.ttl > now {
-          println!("DEBUG: MemoryStorage({}): Found value for key: {} (size: {} bytes)",
+          println!("DEBUG: MemoryStorage({}): Found value for key: {} (size: {} bytes)", 
                    self.debug_name, key, entry.value.len());
           Ok(entry.value.clone())
         } else {
-          println!("DEBUG: MemoryStorage({}): Key found but entry expired: {}",
+          println!("DEBUG: MemoryStorage({}): Key found but entry expired: {}", 
                    self.debug_name, key);
           Err(Error::ValueNotFound)
         }
       }
       None => {
         println!("DEBUG: MemoryStorage({}): Key not found: {}", self.debug_name, key);
-
+        
         // キーが見つからない場合は、既存の全キーをログに出力して確認
         if !self.storage.is_empty() {
           println!("DEBUG: MemoryStorage({}): Available keys:", self.debug_name);
@@ -200,12 +200,12 @@ impl Storage for MemoryStorage {
             println!("  - {}", stored_key);
           }
         }
-
+        
         Err(Error::ValueNotFound)
       }
     }
   }
-
+  
   fn remove(&mut self, key: &NodeId) -> Result<()> {
     if self.storage.remove(key).is_some() {
       Ok(())
@@ -229,18 +229,18 @@ impl DualStorage {
   pub fn new(name: &str) -> Self {
     let memory_storage = MemoryStorage::with_name(name);
     let (shared_storage, _) = memory_storage.create_shared();
-
+    
     DualStorage {
       memory_storage,
       shared_storage,
     }
   }
-
+  
   /// Get the shared storage for UdpNetwork
   pub fn shared_storage(&self) -> Arc<tokio::sync::Mutex<HashMap<NodeId, Vec<u8>>>> {
     self.shared_storage.clone()
   }
-
+  
   /// Dump storage contents for debugging
   pub fn dump_storage(&self) {
     self.memory_storage.dump_storage();
@@ -251,16 +251,16 @@ impl Storage for DualStorage {
   fn store(&mut self, key: &NodeId, value: Vec<u8>) -> Result<()> {
     // Store in memory storage first
     let result = self.memory_storage.store(key, value.clone());
-
+    
     // Then ensure it's in the shared storage
     tokio::task::block_in_place(|| {
       let mut storage = futures::executor::block_on(self.shared_storage.lock());
       storage.insert(key.clone(), value);
     });
-
+    
     result
   }
-
+  
   fn get(&mut self, key: &NodeId) -> Result<Vec<u8>> {
     // First try memory storage for faster access
     match self.memory_storage.get(key) {
@@ -271,12 +271,12 @@ impl Storage for DualStorage {
           let storage = futures::executor::block_on(self.shared_storage.lock());
           storage.get(key).cloned()
         });
-
+        
         match value_opt {
           Some(value) => {
             // Also update memory storage for future faster lookups
             println!("DEBUG: DualStorage: Value found in shared storage but not in memory, syncing");
-            // Store directly since we have a mutable self
+            // Use store method to update memory storage
             let _ = self.memory_storage.store(key, value.clone());
             Ok(value)
           },
@@ -285,16 +285,16 @@ impl Storage for DualStorage {
       }
     }
   }
-
+  
   fn remove(&mut self, key: &NodeId) -> Result<()> {
     // Remove from both storages
     let result = self.memory_storage.remove(key);
-
+    
     tokio::task::block_in_place(|| {
       let mut storage = futures::executor::block_on(self.shared_storage.lock());
       storage.remove(key);
     });
-
+    
     result
   }
 }
@@ -333,5 +333,24 @@ mod tests {
 
     // The get should fail now
     assert!(storage.get(&key).is_err());
+  }
+  
+  #[test]
+  fn test_dual_storage() {
+    let mut storage = DualStorage::new("test_dual");
+    let key = NodeId::random();
+    let value = vec![1, 2, 3, 4];
+    
+    // Test store and get
+    storage.store(&key, value.clone()).unwrap();
+    assert_eq!(storage.get(&key).unwrap(), value);
+    
+    // Test shared storage access
+    let value_in_shared = tokio::task::block_in_place(|| {
+      let shared = futures::executor::block_on(storage.shared_storage.lock());
+      shared.get(&key).cloned()
+    });
+    
+    assert_eq!(value_in_shared, Some(value.clone()));
   }
 }

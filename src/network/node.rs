@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio::time::interval;
 
 use crate::network::udp::UdpNetwork;
@@ -158,8 +158,9 @@ impl<S: Storage, N: Network> Node<S, N> {
 
     // First, store it locally
     println!("Storing value locally...");
+    // 長めのタイムアウトを設定（30秒）
     let result = match tokio::time::timeout(
-      Duration::from_secs(15),
+      Duration::from_secs(30),
       self.protocol.store_value(key_id.clone(), value.clone()),
     )
     .await
@@ -183,8 +184,9 @@ impl<S: Storage, N: Network> Node<S, N> {
     for node in &nodes {
       if node.id != self.node_id {
         println!("Directly sending STORE to node: {}", node.id);
+        // 長めのタイムアウトを設定（30秒）
         match tokio::time::timeout(
-          Duration::from_secs(10),
+          Duration::from_secs(30),
           self.protocol.store(node, key_id.clone(), value.clone()),
         )
         .await
@@ -362,24 +364,23 @@ impl<S: Storage, N: Network> Node<S, N> {
   }
 }
 
-/// Convenience implementation for using UDP transport
+/// Convenience implementation for using UDP transport with memory storage
 impl Node<MemoryStorage, UdpNetwork> {
   /// Create a new Kademlia node with UDP transport and memory storage
   pub async fn with_udp(addr: SocketAddr) -> Result<Self> {
     let node_id = NodeId::from_socket_addr(&addr);
 
-    // 重要: 共有ストレージを作成し、MemoryStorageとUdpNetworkの両方で使用する
+    // Create a shared storage for the network
     let shared_storage = Arc::new(tokio::sync::Mutex::new(HashMap::<NodeId, Vec<u8>>::new()));
 
-    // MemoryStorageの代わりに直接共有ストレージを使用するカスタムストレージを作成
-    // 実際のアプリケーションでは、MemoryStorageを修正して共有ストレージを使用するようにすべき
+    // Create the storage
     let storage = MemoryStorage::with_name(&format!("node_{}", addr.port()));
 
     // Create the network with the shared storage
-    let network = UdpNetwork::with_storage(addr, shared_storage.clone()).await?;
+    let network = UdpNetwork::with_storage(addr, shared_storage).await?;
 
     // テスト用に、ストレージの同期を確認するデバッグログを追加
-    println!("DEBUG: Created node with shared storage between MemoryStorage and UdpNetwork");
+    println!("DEBUG: Created node with shared storage");
 
     // Create the node
     Ok(Node::new(node_id, addr, storage, network))

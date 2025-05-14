@@ -18,7 +18,7 @@ use crate::{Error, Result};
 const ALPHA: usize = 3;
 
 /// Default timeout for RPC operations
-const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+const RPC_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Protocol handler for Kademlia operations
 pub struct Protocol<S, N>

@@ -128,18 +128,38 @@ impl<S: Storage, N: Network> Node<S, N> {
 
   /// Store a key-value pair in the DHT
   pub async fn store(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-    let key_id = NodeId::from_bytes(key);
-    println!("Storing key: {}", key_id);
+    // キーのハッシュ方法を一貫性のあるものにする
+    // このメソッドを利用する側はバイナリキーを渡すが、
+    // 常に同じハッシュアルゴリズムを使用して処理する
 
-    // デバッグ: 元のキーとNodeIdに変換後のキーの情報を表示
-    println!("DEBUG: Original key bytes: {:?}", key);
-    println!("DEBUG: Converted key: {} (hex: {})", key_id, key_id.to_hex());
-    println!("DEBUG: Value content: \"{}\"", String::from_utf8_lossy(&value));
+    // 人間が読めるキー形式（デバッグ用）
+    let key_str = if key.iter().all(|&b| b >= 32 && b <= 126) {
+      String::from_utf8_lossy(key).to_string()
+    } else {
+      format!("<binary key of length {}>", key.len())
+    };
+
+    println!("Storing key: \"{}\"", key_str);
+
+    // NodeIdに変換（一貫したハッシュを使用）
+    let key_id = NodeId::from_bytes(key);
+
+    // デバッグ情報
+    println!("DEBUG: Original key: \"{}\" (bytes: {:?})", key_str, key);
+    println!("DEBUG: Hashed key ID: {} (hex: {})", key_id, key_id.to_hex());
+
+    // 値の内容（デバッグ用）
+    let value_str = if value.iter().all(|&b| b >= 32 && b <= 126) {
+      format!("\"{}\"", String::from_utf8_lossy(&value))
+    } else {
+      format!("<binary data of length {}>", value.len())
+    };
+    println!("DEBUG: Value content: {}", value_str);
 
     // First, store it locally
     println!("Storing value locally...");
     let result = match tokio::time::timeout(
-      Duration::from_secs(5),
+      Duration::from_secs(15),
       self.protocol.store_value(key_id.clone(), value.clone()),
     )
     .await
@@ -164,7 +184,7 @@ impl<S: Storage, N: Network> Node<S, N> {
       if node.id != self.node_id {
         println!("Directly sending STORE to node: {}", node.id);
         match tokio::time::timeout(
-          Duration::from_secs(2),
+          Duration::from_secs(10),
           self.protocol.store(node, key_id.clone(), value.clone()),
         )
         .await
@@ -182,13 +202,21 @@ impl<S: Storage, N: Network> Node<S, N> {
 
   /// Retrieve a value from the DHT by key
   pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
-    let key_id = NodeId::from_bytes(key);
-    println!("Looking up key: {}", key_id);
+    // 人間が読めるキー形式（デバッグ用）
+    let key_str = if key.iter().all(|&b| b >= 32 && b <= 126) {
+      String::from_utf8_lossy(key).to_string()
+    } else {
+      format!("<binary key of length {}>", key.len())
+    };
 
-    // デバッグ: 元のキーとNodeIdに変換後のキーの情報を表示
-    let key_str = String::from_utf8_lossy(key);
-    println!("DEBUG: Original key: \"{}\"", key_str);
-    println!("DEBUG: Converted key: {} (hex: {})", key_id, key_id.to_hex());
+    println!("Looking up key: \"{}\"", key_str);
+
+    // NodeIdに変換（一貫したハッシュを使用）
+    let key_id = NodeId::from_bytes(key);
+
+    // デバッグ情報
+    println!("DEBUG: Original key: \"{}\" (bytes: {:?})", key_str, key);
+    println!("DEBUG: Hashed key ID for lookup: {} (hex: {})", key_id, key_id.to_hex());
 
     // プロトコルのfind_valueメソッドを呼び出す（タイムアウトなし）
     println!("Looking up value through protocol...");
@@ -345,7 +373,7 @@ impl Node<MemoryStorage, UdpNetwork> {
 
     // MemoryStorageの代わりに直接共有ストレージを使用するカスタムストレージを作成
     // 実際のアプリケーションでは、MemoryStorageを修正して共有ストレージを使用するようにすべき
-    let storage = MemoryStorage::new();
+    let storage = MemoryStorage::with_name(&format!("node_{}", addr.port()));
 
     // Create the network with the shared storage
     let network = UdpNetwork::with_storage(addr, shared_storage.clone()).await?;

@@ -31,15 +31,21 @@ impl NodeId {
   }
 
   /// Creates a NodeId from raw bytes
+  /// Applies a consistent hash to ensure keys are always the correct length
   pub fn from_bytes(data: &[u8]) -> Self {
-    let mut bytes = [0u8; KEY_LENGTH_BYTES];
-    let len = std::cmp::min(data.len(), KEY_LENGTH_BYTES);
-    bytes[..len].copy_from_slice(&data[..len]);
+    // 元のバイトデータを保存
+    println!("DEBUG: Original key bytes: {:?}", data);
 
-    // デバッグ: 変換前後のバイト配列を表示
+    // すべてのキー入力に対して常にSHA-256ハッシュを使用し、最初の20バイトを取得
+    // これにより、すべてのキーが一貫した方法で処理される
+    let hash_result = Sha256::digest(data);
+    let mut bytes = [0u8; KEY_LENGTH_BYTES];
+    bytes.copy_from_slice(&hash_result[..KEY_LENGTH_BYTES]);
+
+    // デバッグログ出力
     println!("DEBUG: NodeId::from_bytes - Input data: {:?}", data);
-    println!("DEBUG: NodeId::from_bytes - Converted bytes: {:?}", bytes);
-    println!("DEBUG: NodeId::from_bytes - Hex representation: {}", hex::encode(bytes));
+    println!("DEBUG: NodeId::from_bytes - Hash result: {:?}", &hash_result[..KEY_LENGTH_BYTES]);
+    println!("DEBUG: NodeId::from_bytes - Final NodeId: {}", hex::encode(bytes));
 
     NodeId { bytes }
   }

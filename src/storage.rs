@@ -37,6 +37,8 @@ pub struct MemoryStorage {
   storage: HashMap<NodeId, StorageEntry>,
   /// Default TTL for entries
   default_ttl: Duration,
+  /// Debug name for this storage instance
+  debug_name: String,
 }
 
 impl MemoryStorage {
@@ -45,6 +47,7 @@ impl MemoryStorage {
     MemoryStorage {
       storage: HashMap::new(),
       default_ttl: DEFAULT_TTL,
+      debug_name: "default".to_string(),
     }
   }
 
@@ -53,7 +56,51 @@ impl MemoryStorage {
     MemoryStorage {
       storage: HashMap::new(),
       default_ttl: ttl,
+      debug_name: "default".to_string(),
     }
+  }
+
+  /// Create a new memory storage with a specific name (for debugging)
+  pub fn with_name(name: &str) -> Self {
+    MemoryStorage {
+      storage: HashMap::new(),
+      default_ttl: DEFAULT_TTL,
+      debug_name: name.to_string(),
+    }
+  }
+
+  /// Create a new memory storage with both name and TTL
+  pub fn with_name_and_ttl(name: &str, ttl: Duration) -> Self {
+    MemoryStorage {
+      storage: HashMap::new(),
+      default_ttl: ttl,
+      debug_name: name.to_string(),
+    }
+  }
+
+  /// Get all stored keys
+  pub fn get_all_keys(&self) -> Vec<NodeId> {
+    self.storage.keys().cloned().collect()
+  }
+
+  /// Get iterator over all stored items
+  pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &Vec<u8>)> {
+    self.storage.iter().map(|(k, entry)| (k, &entry.value))
+  }
+
+  /// Debug method to dump all stored values
+  pub fn dump_storage(&self) {
+    println!("===== Storage dump for '{}' ({} items) =====", self.debug_name, self.storage.len());
+    for (key, entry) in &self.storage {
+      let value_preview = if entry.value.len() > 20 {
+        format!("{:?}... ({} bytes)", &entry.value[0..20], entry.value.len())
+      } else {
+        format!("{:?}", entry.value)
+      };
+
+      println!("Key: {} -> Value: {}", key, value_preview);
+    }
+    println!("===== End of storage dump =====");
   }
 
   /// Clean up expired entries
@@ -77,20 +124,53 @@ impl MemoryStorage {
 
 impl Storage for MemoryStorage {
   fn store(&mut self, key: &NodeId, value: Vec<u8>) -> Result<()> {
-    self.store_with_ttl(key, value, self.default_ttl)
+    println!("DEBUG: MemoryStorage({}): Storing value for key: {}", self.debug_name, key);
+    let result = self.store_with_ttl(key, value, self.default_ttl);
+
+    // ストア後にストレージの状態をダンプ（デバッグ用）
+    if result.is_ok() {
+      println!("DEBUG: MemoryStorage({}): Successfully stored value", self.debug_name);
+      // 重要なところだけ詳細にダンプ
+      if self.storage.len() < 10 {
+        self.dump_storage();
+      } else {
+        println!("DEBUG: MemoryStorage({}): Storage contains {} items",
+                 self.debug_name, self.storage.len());
+      }
+    }
+
+    result
   }
 
   fn get(&self, key: &NodeId) -> Result<Vec<u8>> {
+    println!("DEBUG: MemoryStorage({}): Looking up key: {}", self.debug_name, key);
+
     match self.storage.get(key) {
       Some(entry) => {
         let now = Instant::now();
         if entry.timestamp + entry.ttl > now {
+          println!("DEBUG: MemoryStorage({}): Found value for key: {} (size: {} bytes)",
+                   self.debug_name, key, entry.value.len());
           Ok(entry.value.clone())
         } else {
+          println!("DEBUG: MemoryStorage({}): Key found but entry expired: {}",
+                   self.debug_name, key);
           Err(Error::ValueNotFound)
         }
       }
-      None => Err(Error::ValueNotFound),
+      None => {
+        println!("DEBUG: MemoryStorage({}): Key not found: {}", self.debug_name, key);
+
+        // キーが見つからない場合は、既存の全キーをログに出力して確認
+        if !self.storage.is_empty() {
+          println!("DEBUG: MemoryStorage({}): Available keys:", self.debug_name);
+          for stored_key in self.storage.keys() {
+            println!("  - {}", stored_key);
+          }
+        }
+
+        Err(Error::ValueNotFound)
+      }
     }
   }
 

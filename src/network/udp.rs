@@ -298,14 +298,40 @@ impl UdpNetwork {
     }
   }
 
-  /// Task for sending outgoing messages
+  /// Task for sending outgoing messages with retry mechanism
   async fn handle_outgoing(socket: Arc<UdpSocket>, mut rx: mpsc::Receiver<(SocketAddr, Vec<u8>)>) {
     while let Some((addr, data)) = rx.recv().await {
       println!("Sending message to {}", addr);
-      if let Err(e) = socket.send_to(&data, addr).await {
-        eprintln!("Error sending to {}: {}", addr, e);
-      } else {
-        println!("Message sent successfully to {}", addr);
+
+      // リトライパラメータを設定
+      const MAX_RETRIES: usize = 3;
+      const RETRY_DELAY_MS: u64 = 500;
+
+      let mut success = false;
+
+      // リトライループ
+      for attempt in 1..=MAX_RETRIES {
+        match socket.send_to(&data, addr).await {
+          Ok(_) => {
+            println!("Message sent successfully to {} on attempt {}", addr, attempt);
+            success = true;
+            break;
+          }
+          Err(e) => {
+            if attempt < MAX_RETRIES {
+              eprintln!("Error sending to {} (attempt {}/{}): {}. Retrying...",
+                        addr, attempt, MAX_RETRIES, e);
+              tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+            } else {
+              eprintln!("Error sending to {} after {} attempts: {}",
+                        addr, MAX_RETRIES, e);
+            }
+          }
+        }
+      }
+
+      if !success {
+        eprintln!("Failed to send message to {} after {} attempts", addr, MAX_RETRIES);
       }
     }
   }

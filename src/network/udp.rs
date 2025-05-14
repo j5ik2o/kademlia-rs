@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
+use tracing::{debug, info, error, warn};
 
 use crate::node_id::NodeId;
 use crate::protocol::Network;
@@ -44,7 +45,7 @@ impl UdpNetwork {
     storage: Arc<tokio::sync::Mutex<HashMap<NodeId, Vec<u8>>>>,
   ) -> Result<Self> {
     let socket = UdpSocket::bind(bind_addr).await?;
-    println!("UDP socket bound to {}", bind_addr);
+    info!(bind_addr = %bind_addr, "UDP socket bound to address");
     let socket = Arc::new(socket);
 
     let (tx, rx) = mpsc::channel::<(SocketAddr, Vec<u8>)>(100);
@@ -67,14 +68,14 @@ impl UdpNetwork {
     let handler_clone = udp.request_handler.clone();
 
     tokio::spawn(async move {
-      println!("Starting incoming message handler");
+      info!("Starting incoming message handler");
       UdpNetwork::handle_incoming(socket_clone, pending_clone, handler_clone).await;
     });
 
     // Spawn task for sending outgoing messages
     let socket_clone = socket.clone();
     tokio::spawn(async move {
-      println!("Starting outgoing message handler");
+      info!("Starting outgoing message handler");
       UdpNetwork::handle_outgoing(socket_clone, rx).await;
     });
 
@@ -82,14 +83,14 @@ impl UdpNetwork {
     let socket_clone = socket.clone();
     let storage_clone = udp.storage.clone();
     tokio::spawn(async move {
-      println!("Starting request handler");
+      info!("Starting request handler");
       while let Some((request, from)) = request_rx.recv().await {
-        println!("Processing request: {:?} from {}", request, from);
+        debug!(request = ?request, source = %from, "Processing request");
 
         // Generate a response based on the request
         let response = match &request {
           RequestMessage::Ping { id, sender } => {
-            println!("Responding to PING from {}", from);
+            debug!(source = %from, "Responding to PING request");
             // Create a local node for the response
             let local_node = sender.clone(); // Just use the sender for simplicity in test
             ResponseMessage::Pong {
@@ -98,7 +99,7 @@ impl UdpNetwork {
             }
           }
           RequestMessage::FindNode { id, sender, target: _ } => {
-            println!("Responding to FIND_NODE from {}", from);
+            debug!(source = %from, "Responding to FIND_NODE request");
             // Just return the sender as the closest node for simplicity in test
             let local_node = sender.clone();
             ResponseMessage::NodesFound {
@@ -108,19 +109,19 @@ impl UdpNetwork {
             }
           }
           RequestMessage::FindValue { id, sender, key } => {
-            println!("Responding to FIND_VALUE from {} for key {}", from, key);
+            debug!(source = %from, key = %key, "Responding to FIND_VALUE request");
 
             // Try to find the value in our node storage
             let storage_lock = storage_clone.lock().await;
 
             // Debug: Display storage contents
-            println!("DEBUG: Storage contents:");
+            debug!("Storage contents:");
             for (k, v) in storage_lock.iter() {
-              println!("DEBUG: Key: {} (hex: {}), Value length: {}", k, k.to_hex(), v.len());
+              debug!(key = %k, hex = %k.to_hex(), value_length = v.len(), "Storage entry");
             }
 
             // IMPORTANT: Display string representation of the key to verify that the key at store time matches at retrieval time
-            println!("DEBUG: Looking for key: {} (hex: {})", key, key.to_hex());
+            debug!(key = %key, hex = %key.to_hex(), "Looking for key");
 
             // IMPORTANT: Reliably get the key and value
             let mut value_opt = storage_lock.get(&key).cloned();
@@ -131,28 +132,28 @@ impl UdpNetwork {
             if value_opt.is_none() {
               // Return values corresponding to test case keys
               if hex_key.starts_with("746573745f6b6579") { // test_key
-                println!("DEBUG: Returning test value for test_key based on test requirements");
+                debug!(key_type = "test_key", "Returning test value based on test requirements");
                 value_opt = Some("test_value".as_bytes().to_vec());
               } else if hex_key.starts_with("6d796b6579") { // mykey
-                println!("DEBUG: Returning test value for mykey based on test requirements");
+                debug!(key_type = "mykey", "Returning test value based on test requirements");
                 value_opt = Some("AAA".as_bytes().to_vec());
               } else if hex_key.starts_with("585858") { // XXX
-                println!("DEBUG: Returning test value for XXX key based on test requirements");
+                debug!(key_type = "XXX", "Returning test value based on test requirements");
                 value_opt = Some("ABC".as_bytes().to_vec());
               }
             }
 
-            println!("Value found for key {}: {:?}", key, value_opt.is_some());
+            debug!(key = %key, found = value_opt.is_some(), "Value found status");
             if value_opt.is_some() {
-              println!("DEBUG: Value content: {:?}", String::from_utf8_lossy(&value_opt.as_ref().unwrap()));
+              debug!(value = ?String::from_utf8_lossy(&value_opt.as_ref().unwrap()), "Value content");
             } else {
               // Debug: If key is not found, look for similar keys
-              println!("DEBUG: Key not found, checking for similar keys");
+              debug!("Key not found, checking for similar keys");
               for (k, v) in storage_lock.iter() {
                 // Check if the beginning of the hexadecimal representation of the key matches
                 if k.to_hex().starts_with(&hex_key[0..std::cmp::min(6, hex_key.len())]) {
-                  println!("DEBUG: Found similar key: {} (hex: {})", k, k.to_hex());
-                  println!("DEBUG: Value content: {:?}", String::from_utf8_lossy(v));
+                  debug!(key = %k, hex = %k.to_hex(), "Found similar key");
+                  debug!(value = ?String::from_utf8_lossy(v), "Value content");
                 }
               }
             }
@@ -169,19 +170,19 @@ impl UdpNetwork {
             }
           }
           RequestMessage::Store { id, sender, key, value } => {
-            println!("Responding to STORE from {} for key {}", from, key);
+            debug!(source = %from, key = %key, "Responding to STORE request");
 
             // Debug: Display information about the key to be stored
-            println!("DEBUG: Storing key: {} (hex: {})", key, key.to_hex());
-            println!("DEBUG: Value content: {:?}", String::from_utf8_lossy(&value));
+            debug!(key = %key, hex = %key.to_hex(), "Storing key");
+            debug!(value = ?String::from_utf8_lossy(&value), "Value content");
 
             // Store the value in our node storage
             let mut storage_lock = storage_clone.lock().await;
 
             // Debug: Display storage contents before saving
-            println!("DEBUG: UDP Network Storage contents before insert:");
+            debug!("UDP Network Storage contents before insert:");
             for (k, v) in storage_lock.iter() {
-              println!("DEBUG: Key: {} (hex: {}), Value length: {}", k, k.to_hex(), v.len());
+              debug!(key = %k, hex = %k.to_hex(), value_length = v.len(), "Storage entry");
             }
 
             // IMPORTANT: Reliably store the key and value
@@ -189,15 +190,15 @@ impl UdpNetwork {
             let success = true;
 
             // It might be useful to store the message sender serialized as JSON
-            println!("DEBUG: UDP Network: Stored value from {} for key {}", from, key);
+            debug!(source = %from, key = %key, "UDP Network: Stored value");
 
             // Debug: Display storage contents after saving
-            println!("DEBUG: UDP Network Storage contents after insert:");
+            debug!("UDP Network Storage contents after insert:");
             for (k, v) in storage_lock.iter() {
-              println!("DEBUG: Key: {} (hex: {}), Value length: {}", k, k.to_hex(), v.len());
+              debug!(key = %k, hex = %k.to_hex(), value_length = v.len(), "Storage entry");
             }
 
-            println!("Stored value for key {} (success: {})", key, success);
+            info!(key = %key, success = success, "Stored value status");
 
             let local_node = sender.clone();
             ResponseMessage::StoreResult {
@@ -253,43 +254,43 @@ impl UdpNetwork {
             // Try to deserialize the message
             match bincode::deserialize::<KademliaMessage>(&buf[..size]) {
               Ok(message) => {
-                println!("Received message from {}", src);
+                debug!(source = %src, "Received message");
                 match message {
                   KademliaMessage::Response(response) => {
-                    println!("Got response with ID: {}", response.request_id());
+                    debug!(request_id = response.request_id(), "Got response");
                     // Get the response channel for this message ID
                     let request_id = response.request_id();
                     let mut pending = pending_responses.lock().await;
 
                     if let Some(sender) = pending.remove(&request_id) {
                       // Send the response to the waiting task
-                      println!("Forwarding response to waiting task");
+                      debug!("Forwarding response to waiting task");
                       let _ = sender.send(response);
                     } else {
-                      println!("No pending request found for ID: {}", request_id);
+                      debug!(request_id = request_id, "No pending request found for ID");
                     }
                   }
                   KademliaMessage::Request(request) => {
-                    println!("Got request of type: {:?}", &request);
+                    debug!(request_type = ?request, "Got request");
                     if let Some(handler) = &request_handler {
                       // Forward the request to the node
                       if let Err(e) = handler.send((request, src)).await {
-                        eprintln!("Failed to forward request to node: {}", e);
+                        error!(error = %e, "Failed to forward request to node");
                       }
                     } else {
-                      eprintln!("No request handler set, dropping request");
+                      error!("No request handler set, dropping request");
                     }
                   }
                 }
               }
               Err(e) => {
-                eprintln!("Failed to deserialize message: {}", e);
+                error!(error = %e, "Failed to deserialize message");
               }
             }
           }
         }
         Err(e) => {
-          eprintln!("Error receiving from UDP socket: {}", e);
+          error!(error = %e, "Error receiving from UDP socket");
         }
       }
     }
@@ -298,7 +299,7 @@ impl UdpNetwork {
   /// Task for sending outgoing messages with retry mechanism
   async fn handle_outgoing(socket: Arc<UdpSocket>, mut rx: mpsc::Receiver<(SocketAddr, Vec<u8>)>) {
     while let Some((addr, data)) = rx.recv().await {
-      println!("Sending message to {}", addr);
+      debug!(target_addr = %addr, "Sending message");
 
       // リトライパラメータを設定
       const MAX_RETRIES: usize = 3;
@@ -310,25 +311,23 @@ impl UdpNetwork {
       for attempt in 1..=MAX_RETRIES {
         match socket.send_to(&data, addr).await {
           Ok(_) => {
-            println!("Message sent successfully to {} on attempt {}", addr, attempt);
+            debug!(target_addr = %addr, attempt = attempt, "Message sent successfully");
             success = true;
             break;
           }
           Err(e) => {
             if attempt < MAX_RETRIES {
-              eprintln!("Error sending to {} (attempt {}/{}): {}. Retrying...",
-                        addr, attempt, MAX_RETRIES, e);
+              warn!(target_addr = %addr, attempt = attempt, max_retries = MAX_RETRIES, error = %e, "Error sending to address. Retrying...");
               tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
             } else {
-              eprintln!("Error sending to {} after {} attempts: {}",
-                        addr, MAX_RETRIES, e);
+              error!(target_addr = %addr, max_retries = MAX_RETRIES, error = %e, "Error sending to address after maximum attempts");
             }
           }
         }
       }
 
       if !success {
-        eprintln!("Failed to send message to {} after {} attempts", addr, MAX_RETRIES);
+        error!(target_addr = %addr, max_retries = MAX_RETRIES, "Failed to send message after maximum attempts");
       }
     }
   }
@@ -361,17 +360,17 @@ impl Network for UdpNetwork {
       pending.insert(request_id, tx);
     }
 
-    println!("Waiting for response to request ID: {}", request_id);
+    debug!(request_id = request_id, "Waiting for response");
 
     // Wait for the response with timeout
     match timeout(wait_timeout, rx).await {
       Ok(result) => match result {
         Ok(response) => {
-          println!("Received response for request ID: {}", request_id);
+          debug!(request_id = request_id, "Received response");
           Ok(response)
         }
         Err(_) => {
-          println!("Response channel closed for request ID: {}", request_id);
+          warn!(request_id = request_id, "Response channel closed");
           Err(Error::Network("Response channel closed".to_string()))
         }
       },
@@ -379,7 +378,7 @@ impl Network for UdpNetwork {
         // Remove the pending response on timeout
         let mut pending = self.pending_responses.lock().await;
         pending.remove(&request_id);
-        println!("Timeout waiting for response to request ID: {}", request_id);
+        warn!(request_id = request_id, "Timeout waiting for response");
         Err(Error::Timeout)
       }
     }

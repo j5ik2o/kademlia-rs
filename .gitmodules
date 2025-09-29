@@ -1,0 +1,18 @@
+[submodule "references/prettymuchbryce-kademlia"]
+	path = references/prettymuchbryce-kademlia
+	url = git@github.com:prettymuchbryce/kademlia.git
+[submodule "references/nictuku-dht"]
+	path = references/nictuku-dht
+	url = git@github.com:nictuku/dht.git
+[submodule "references/libp2p-go-libp2p-kad-dht"]
+	path = references/libp2p-go-libp2p-kad-dht
+	url = git@github.com:libp2p/go-libp2p-kad-dht.git
+[submodule "references/bmuller-kademlia"]
+	path = references/bmuller-kademlia
+	url = git@github.com:bmuller/kademlia.git
+[submodule "references/davidkeller-kademlia"]
+	path = references/davidkeller-kademlia
+	url = git@github.com:DavidKeller/kademlia.git
+[submodule "references/holepunchto-dht-rpc"]
+	path = references/holepunchto-dht-rpc
+	url = git@github.com:holepunchto/dht-rpc.git

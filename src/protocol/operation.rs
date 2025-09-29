@@ -75,12 +75,15 @@ where
 
   /// Handle an incoming request
   pub async fn handle_request(&self, req: RequestMessage, from: SocketAddr) -> Result<()> {
-    // Update the routing table with the sender node
     let sender = req.sender().clone();
-    {
+    let is_new_contact = if sender.id == self.node_id {
+      false
+    } else {
       let mut table = self.routing_table.write().await;
+      let known = table.contains(&sender.id);
       table.update(sender.clone())?;
-    }
+      !known
+    };
 
     match req {
       RequestMessage::Ping { id, sender } => {
@@ -94,6 +97,12 @@ where
       }
       RequestMessage::FindValue { id, sender, key } => {
         self.handle_find_value(id, sender, key, from).await?;
+      }
+    }
+
+    if is_new_contact {
+      if let Err(err) = self.replicate_to_new_node(&sender).await {
+        tracing::debug!(target = %sender.id, ?err, "Failed to replicate data to new node");
       }
     }
 
@@ -732,6 +741,37 @@ where
             Ok(Err(e)) => tracing::warn!(node_id = %node.id, error = ?e, "Error storing on node"),
             Err(_) => tracing::warn!(node_id = %node.id, "Timeout storing on node"),
           }
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  async fn replicate_to_new_node(&self, node: &Node) -> Result<()> {
+    let keys = {
+      let storage = self.storage.read().await;
+      storage.keys()
+    };
+
+    for key in keys {
+      let should_store = {
+        let table = self.routing_table.read().await;
+        table.get_closest(&key, K).iter().any(|closest| closest.id == node.id)
+      };
+
+      if !should_store {
+        continue;
+      }
+
+      let value_opt = {
+        let mut storage = self.storage.write().await;
+        storage.get(&key).ok()
+      };
+
+      if let Some(value) = value_opt {
+        if let Err(err) = self.store(node, key.clone(), value).await {
+          tracing::debug!(target = %node.id, key = %key, ?err, "Replication store failed");
         }
       }
     }

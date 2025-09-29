@@ -9,9 +9,7 @@ use kademlia::network::Node;
 // Use a custom main function to have more control over the runtime
 fn main() -> kademlia::Result<()> {
   // Create a tokio runtime explicitly
-  let runtime = tokio::runtime::Builder::new_multi_thread()
-    .enable_all()
-    .build()?;
+  let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
   // Run the async main function
   runtime.block_on(async_main())

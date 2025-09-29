@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,14 @@ pub trait Storage: Send + Sync + 'static {
 
   /// Remove a key-value pair
   fn remove(&mut self, key: &NodeId) -> Result<()>;
+
+  /// Enumerate all stored keys (default: empty)
+  fn keys(&self) -> Vec<NodeId> {
+    Vec::new()
+  }
+
+  /// Cleanup expired entries (default: no-op)
+  fn cleanup(&mut self) {}
 }
 
 /// Default time-to-live for stored values
@@ -225,6 +233,14 @@ impl Storage for MemoryStorage {
       Err(Error::ValueNotFound)
     }
   }
+
+  fn keys(&self) -> Vec<NodeId> {
+    self.get_all_keys()
+  }
+
+  fn cleanup(&mut self) {
+    MemoryStorage::cleanup(self);
+  }
 }
 
 /// DualStorage provides synchronized access to both a MemoryStorage instance
@@ -312,6 +328,19 @@ impl Storage for DualStorage {
     });
 
     result
+  }
+
+  fn keys(&self) -> Vec<NodeId> {
+    self.memory_storage.get_all_keys()
+  }
+
+  fn cleanup(&mut self) {
+    MemoryStorage::cleanup(&mut self.memory_storage);
+    tokio::task::block_in_place(|| {
+      let valid_keys: HashSet<NodeId> = self.memory_storage.get_all_keys().into_iter().collect();
+      let mut storage = futures::executor::block_on(self.shared_storage.lock());
+      storage.retain(|key, _| valid_keys.contains(key));
+    });
   }
 }
 

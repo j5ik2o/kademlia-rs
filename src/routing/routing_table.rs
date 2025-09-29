@@ -40,6 +40,13 @@ impl RoutingTable {
     &self.local_node_id
   }
 
+  /// Returns the bucket indices currently stored in the table
+  pub fn bucket_indices(&self) -> Vec<usize> {
+    let mut indices: Vec<usize> = self.buckets.keys().cloned().collect();
+    indices.sort_unstable();
+    indices
+  }
+
   /// Returns the number of nodes in the routing table
   pub fn node_count(&self) -> usize {
     self.buckets.values().map(|bucket| bucket.len()).sum()

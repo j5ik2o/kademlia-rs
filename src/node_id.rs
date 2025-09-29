@@ -135,6 +135,34 @@ impl NodeId {
     // This should never happen if distance != 0
     None
   }
+
+  /// Generate a random NodeId that falls into the bucket at `bucket_index`
+  pub fn random_in_bucket(base: &NodeId, bucket_index: usize) -> Option<Self> {
+    if bucket_index >= KEY_LENGTH_BITS {
+      return None;
+    }
+
+    let mut rng = rand::thread_rng();
+    let mut bytes = base.bytes;
+
+    let byte_pos = bucket_index / 8;
+    let bit_pos = 7 - (bucket_index % 8);
+    bytes[byte_pos] ^= 1 << bit_pos;
+
+    let mut bit = bucket_index + 1;
+    while bit < KEY_LENGTH_BITS {
+      let b_pos = bit / 8;
+      let offset = 7 - (bit % 8);
+      if rng.gen() {
+        bytes[b_pos] |= 1 << offset;
+      } else {
+        bytes[b_pos] &= !(1 << offset);
+      }
+      bit += 1;
+    }
+
+    Some(NodeId { bytes })
+  }
 }
 
 impl PartialEq for NodeId {

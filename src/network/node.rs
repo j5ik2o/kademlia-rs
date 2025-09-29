@@ -105,6 +105,11 @@ impl<S: Storage, N: Network> Node<S, N> {
     // 2. Start background maintenance tasks
     tracing::info!(node_addr = %self.addr, "Node started");
 
+    let node_arc = Arc::new(self.clone());
+    Self::spawn_refresh_task(&node_arc);
+    Self::spawn_republish_task(&node_arc);
+    Self::spawn_expiration_check_task(&node_arc);
+
     Ok(())
   }
 
@@ -290,27 +295,36 @@ impl<S: Storage, N: Network> Node<S, N> {
     }
   }
 
-  /// Periodically refresh buckets by looking up a random ID in each bucket's range
-  #[allow(dead_code)]
+  /// Periodically refresh buckets by looking up random IDs per bucket
   fn spawn_refresh_task(node_arc: &Arc<Self>) {
-    let node = node_arc.clone();
+    let node = Arc::clone(node_arc);
     tokio::spawn(async move {
       let mut interval = interval(REFRESH_INTERVAL);
+      let routing_table = Arc::clone(&node.routing_table);
+      let protocol = Arc::clone(&node.protocol);
+      let local_id = node.node_id.clone();
+      drop(node);
 
       loop {
         interval.tick().await;
 
-        // For each bucket, lookup a random ID in that bucket's range
-        let table = node.routing_table.read().await;
-        let buckets_count = table.node_count();
-        drop(table);
+        let bucket_indices = {
+          let table = routing_table.read().await;
+          table.bucket_indices()
+        };
 
-        if buckets_count > 0 {
-          // Refresh all buckets by doing a lookup for a random ID
-          for _ in 0..8 {
-            // Refresh 8 random IDs
-            let random_id = NodeId::random();
-            let _ = node.protocol.find_node(&random_id).await;
+        if bucket_indices.is_empty() {
+          let target = NodeId::random();
+          if let Err(error) = protocol.find_node(&target).await {
+            tracing::debug!(%target, ?error, "Routing table refresh lookup failed");
+          }
+          continue;
+        }
+
+        for index in bucket_indices {
+          let target = NodeId::random_in_bucket(&local_id, index).unwrap_or_else(NodeId::random);
+          if let Err(error) = protocol.find_node(&target).await {
+            tracing::debug!(bucket_index = index, %target, ?error, "Routing table refresh lookup failed");
           }
         }
       }
@@ -318,54 +332,51 @@ impl<S: Storage, N: Network> Node<S, N> {
   }
 
   /// Periodically republish stored key-value pairs
-  #[allow(dead_code)]
   fn spawn_republish_task(node_arc: &Arc<Self>) {
-    let node = node_arc.clone();
+    let node = Arc::clone(node_arc);
     tokio::spawn(async move {
       let mut interval = interval(REPUBLISH_INTERVAL);
+      let storage = Arc::clone(&node.storage);
+      let protocol = Arc::clone(&node.protocol);
+      drop(node);
 
       loop {
         interval.tick().await;
 
-        // Get all stored key-value pairs
-        let _storage = node.storage.read().await;
+        let items: Vec<(NodeId, Vec<u8>)> = {
+          let mut guard = storage.write().await;
+          let keys = guard.keys();
+          let mut pairs = Vec::new();
+          for key in keys {
+            if let Ok(value) = guard.get(&key) {
+              pairs.push((key, value));
+            }
+          }
+          pairs
+        };
 
-        // This would require a method to iterate over all key-value pairs
-        // which we haven't implemented in the Storage trait.
-        // In a real implementation, you would need to add this method
-        // to the Storage trait.
-
-        // For now, we'll just simulate it with a comment:
-        // for (key, value) in storage.iter() {
-        //     let _ = node.protocol.store_value(key.clone(), value.clone()).await;
-        // }
+        for (key, value) in items {
+          if let Err(error) = protocol.store_value(key.clone(), value).await {
+            tracing::debug!(%key, ?error, "Failed to republish value");
+          }
+        }
       }
     });
   }
 
   /// Periodically check for expired entries
-  #[allow(dead_code)]
   fn spawn_expiration_check_task(node_arc: &Arc<Self>) {
-    let node = node_arc.clone();
+    let node = Arc::clone(node_arc);
     tokio::spawn(async move {
       let mut interval = interval(EXPIRATION_CHECK_INTERVAL);
+      let storage = Arc::clone(&node.storage);
+      drop(node);
 
       loop {
         interval.tick().await;
 
-        // Check for expired entries
-        // This would also require a method in the Storage trait to clean up
-        // expired entries. For MemoryStorage, we already have a cleanup method.
-
-        // This is a type check without unsafe code - it just skips cleanup if S is not MemoryStorage
-        if std::any::TypeId::of::<S>() == std::any::TypeId::of::<MemoryStorage>() {
-          // Downcast would require unsafe code, so we just try to get a write lock
-          // and cast it to Any. For a real implementation, you would add cleanup to the Storage trait
-          if let Ok(_storage) = node.storage.try_write() {
-            // We can't directly call cleanup() since we don't know S is MemoryStorage at compile time
-            // So we'll just ignore this for now - in a real implementation, Storage would have a cleanup method
-          }
-        }
+        let mut guard = storage.write().await;
+        guard.cleanup();
       }
     });
   }
@@ -386,8 +397,7 @@ impl Node<MemoryStorage, UdpNetwork> {
     let (request_tx, mut request_rx) = mpsc::channel::<(RequestMessage, SocketAddr)>(128);
     network.set_request_handler(request_tx).await;
 
-    // Add debug log to verify storage synchronization for testing
-    tracing::debug!("Created node with shared storage");
+    tracing::debug!("Created UDP-backed node");
 
     // Create the node
     let node = Node::new(node_id, addr, storage, network);

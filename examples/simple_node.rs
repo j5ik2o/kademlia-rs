@@ -11,8 +11,7 @@ fn main() -> kademlia::Result<()> {
   // Create a tokio runtime explicitly
   let runtime = tokio::runtime::Builder::new_multi_thread()
     .enable_all()
-    .build()
-    .unwrap();
+    .build()?;
 
   // Run the async main function
   runtime.block_on(async_main())

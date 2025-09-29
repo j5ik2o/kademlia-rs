@@ -33,19 +33,17 @@ impl NodeId {
   /// Creates a NodeId from raw bytes
   /// Applies a consistent hash to ensure keys are always the correct length
   pub fn from_bytes(data: &[u8]) -> Self {
-    // Store the original byte data
     tracing::trace!(original_bytes = ?data, "Creating NodeId from bytes");
 
-    // Always use SHA-256 hash for all key inputs and take the first 20 bytes
-    // This ensures all keys are processed in a consistent manner
-    let hash_result = Sha256::digest(data);
     let mut bytes = [0u8; KEY_LENGTH_BYTES];
-    bytes.copy_from_slice(&hash_result[..KEY_LENGTH_BYTES]);
+    if data.len() >= KEY_LENGTH_BYTES {
+      bytes.copy_from_slice(&data[..KEY_LENGTH_BYTES]);
+    } else {
+      bytes[..data.len()].copy_from_slice(data);
+    }
 
-    // Debug log output
     tracing::debug!(
       input_data = ?data,
-      hash_result = ?&hash_result[..KEY_LENGTH_BYTES],
       node_id = hex::encode(bytes),
       "NodeId::from_bytes details"
     );

@@ -1,7 +1,4 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
-
-use tokio::time::sleep;
 
 use kademlia::network::Node;
 

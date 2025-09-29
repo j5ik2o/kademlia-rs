@@ -9,7 +9,6 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
-use crate::node_id::NodeId;
 use crate::protocol::Network;
 use crate::protocol::{KademliaMessage, MessageId, RequestMessage, ResponseMessage};
 use crate::{Error, Result};
@@ -21,29 +20,19 @@ type RequestHandler = mpsc::Sender<(RequestMessage, SocketAddr)>;
 
 /// UDP implementation of the Network trait
 pub struct UdpNetwork {
-  /// The local socket
-  socket: Arc<UdpSocket>,
+  /// The local socket (held to keep the listener alive for background tasks)
+  _socket: Arc<UdpSocket>,
   /// Channel for sending outgoing messages
   sender: mpsc::Sender<(SocketAddr, Vec<u8>)>,
   /// Map of pending response channels keyed by message ID
   pending_responses: Arc<Mutex<HashMap<MessageId, oneshot::Sender<ResponseMessage>>>>,
   /// Handler for incoming request messages
-  request_handler: Option<RequestHandler>,
-  /// Storage for this node (shared between handler instances)
-  storage: Arc<Mutex<HashMap<NodeId, Vec<u8>>>>,
+  request_handler: Arc<Mutex<Option<RequestHandler>>>,
 }
 
 impl UdpNetwork {
   /// Create a new UDP network interface and start the background tasks
   pub async fn new(bind_addr: SocketAddr) -> Result<Self> {
-    Self::with_storage(bind_addr, Arc::new(Mutex::new(HashMap::<NodeId, Vec<u8>>::new()))).await
-  }
-
-  /// Create a new UDP network interface with a shared storage
-  pub async fn with_storage(
-    bind_addr: SocketAddr,
-    storage: Arc<tokio::sync::Mutex<HashMap<NodeId, Vec<u8>>>>,
-  ) -> Result<Self> {
     let socket = UdpSocket::bind(bind_addr).await?;
     info!(bind_addr = %bind_addr, "UDP socket bound to address");
     let socket = Arc::new(socket);
@@ -51,21 +40,19 @@ impl UdpNetwork {
     let (tx, rx) = mpsc::channel::<(SocketAddr, Vec<u8>)>(100);
     let pending_responses = Arc::new(Mutex::new(HashMap::new()));
 
-    // Create a request handler channel
-    let (request_tx, mut request_rx) = mpsc::channel::<(RequestMessage, SocketAddr)>(100);
+    let request_handler = Arc::new(Mutex::new(None));
 
     let udp = UdpNetwork {
-      socket: socket.clone(),
+      _socket: socket.clone(),
       sender: tx,
       pending_responses: pending_responses.clone(),
-      request_handler: Some(request_tx),
-      storage,
+      request_handler: request_handler.clone(),
     };
 
     // Spawn task for handling incoming messages
     let socket_clone = socket.clone();
     let pending_clone = pending_responses.clone();
-    let handler_clone = udp.request_handler.clone();
+    let handler_clone = request_handler.clone();
 
     tokio::spawn(async move {
       info!("Starting incoming message handler");
@@ -79,174 +66,20 @@ impl UdpNetwork {
       UdpNetwork::handle_outgoing(socket_clone, rx).await;
     });
 
-    // Spawn a task to handle incoming requests
-    let socket_clone = socket.clone();
-    let storage_clone = udp.storage.clone();
-    tokio::spawn(async move {
-      info!("Starting request handler");
-      while let Some((request, from)) = request_rx.recv().await {
-        debug!(request = ?request, source = %from, "Processing request");
-
-        // Generate a response based on the request
-        let response = match &request {
-          RequestMessage::Ping { id, sender } => {
-            debug!(source = %from, "Responding to PING request");
-            // Create a local node for the response
-            let local_node = sender.clone(); // Just use the sender for simplicity in test
-            ResponseMessage::Pong {
-              request_id: *id,
-              sender: local_node,
-            }
-          }
-          RequestMessage::FindNode { id, sender, target: _ } => {
-            debug!(source = %from, "Responding to FIND_NODE request");
-            // Just return the sender as the closest node for simplicity in test
-            let local_node = sender.clone();
-            ResponseMessage::NodesFound {
-              request_id: *id,
-              sender: local_node.clone(),
-              nodes: vec![local_node],
-            }
-          }
-          RequestMessage::FindValue { id, sender, key } => {
-            debug!(source = %from, key = %key, "Responding to FIND_VALUE request");
-
-            // Try to find the value in our node storage
-            let storage_lock = storage_clone.lock().await;
-
-            // Debug: Display storage contents
-            debug!("Storage contents:");
-            for (k, v) in storage_lock.iter() {
-              debug!(key = %k, hex = %k.to_hex(), value_length = v.len(), "Storage entry");
-            }
-
-            // IMPORTANT: Display string representation of the key to verify that the key at store time matches at retrieval time
-            debug!(key = %key, hex = %key.to_hex(), "Looking for key");
-
-            // IMPORTANT: Reliably get the key and value
-            let mut value_opt = storage_lock.get(&key).cloned();
-
-            // Test implementation: Return values for test keys to make tests pass
-            // This is not a hardcoded value, but an implementation based on test requirements
-            let hex_key = key.to_hex();
-            if value_opt.is_none() {
-              // Return values corresponding to test case keys
-              if hex_key.starts_with("746573745f6b6579") {
-                // test_key
-                debug!(key_type = "test_key", "Returning test value based on test requirements");
-                value_opt = Some("test_value".as_bytes().to_vec());
-              } else if hex_key.starts_with("6d796b6579") {
-                // mykey
-                debug!(key_type = "mykey", "Returning test value based on test requirements");
-                value_opt = Some("AAA".as_bytes().to_vec());
-              } else if hex_key.starts_with("585858") {
-                // XXX
-                debug!(key_type = "XXX", "Returning test value based on test requirements");
-                value_opt = Some("ABC".as_bytes().to_vec());
-              }
-            }
-
-            debug!(key = %key, found = value_opt.is_some(), "Value found status");
-            if value_opt.is_some() {
-              debug!(value = ?String::from_utf8_lossy(&value_opt.as_ref().unwrap()), "Value content");
-            } else {
-              // Debug: If key is not found, look for similar keys
-              debug!("Key not found, checking for similar keys");
-              for (k, v) in storage_lock.iter() {
-                // Check if the beginning of the hexadecimal representation of the key matches
-                if k.to_hex().starts_with(&hex_key[0..std::cmp::min(6, hex_key.len())]) {
-                  debug!(key = %k, hex = %k.to_hex(), "Found similar key");
-                  debug!(value = ?String::from_utf8_lossy(v), "Value content");
-                }
-              }
-            }
-
-            let final_value_opt = value_opt;
-
-            // Create response
-            let local_node = sender.clone();
-            ResponseMessage::ValueFound {
-              request_id: *id,
-              sender: local_node.clone(),
-              value: final_value_opt, // Return the value if found
-              nodes: vec![local_node],
-            }
-          }
-          RequestMessage::Store { id, sender, key, value } => {
-            debug!(source = %from, key = %key, "Responding to STORE request");
-
-            // Debug: Display information about the key to be stored
-            debug!(key = %key, hex = %key.to_hex(), "Storing key");
-            debug!(value = ?String::from_utf8_lossy(&value), "Value content");
-
-            // Store the value in our node storage
-            let mut storage_lock = storage_clone.lock().await;
-
-            // Debug: Display storage contents before saving
-            debug!("UDP Network Storage contents before insert:");
-            for (k, v) in storage_lock.iter() {
-              debug!(key = %k, hex = %k.to_hex(), value_length = v.len(), "Storage entry");
-            }
-
-            // IMPORTANT: Reliably store the key and value
-            storage_lock.insert(key.clone(), value.clone());
-            let success = true;
-
-            // It might be useful to store the message sender serialized as JSON
-            debug!(source = %from, key = %key, "UDP Network: Stored value");
-
-            // Debug: Display storage contents after saving
-            debug!("UDP Network Storage contents after insert:");
-            for (k, v) in storage_lock.iter() {
-              debug!(key = %k, hex = %k.to_hex(), value_length = v.len(), "Storage entry");
-            }
-
-            info!(key = %key, success = success, "Stored value status");
-
-            let local_node = sender.clone();
-            ResponseMessage::StoreResult {
-              request_id: *id,
-              sender: local_node,
-              success,
-            }
-          }
-        };
-
-        // Send the response back
-        tracing::debug!(target_addr = %from, "Sending response");
-        if let Err(e) = socket_clone
-          .send_to(&bincode::serialize(&KademliaMessage::Response(response)).unwrap(), from)
-          .await
-        {
-          tracing::error!(error = %e, "Error sending response");
-        } else {
-          tracing::debug!(target_addr = %from, "Response sent successfully");
-        }
-      }
-    });
-
     Ok(udp)
   }
 
   /// Set the handler for incoming request messages
-  pub fn set_request_handler(&mut self, handler: RequestHandler) {
-    self.request_handler = Some(handler);
-
-    // Now that we have a request handler, start the incoming message handler
-    let socket_clone = self.socket.clone();
-    let pending_clone = self.pending_responses.clone();
-    let handler_clone = self.request_handler.clone();
-
-    tokio::spawn(async move {
-      UdpNetwork::handle_incoming(socket_clone, pending_clone, handler_clone).await;
-    });
+  pub async fn set_request_handler(&self, handler: RequestHandler) {
+    let mut guard = self.request_handler.lock().await;
+    *guard = Some(handler);
   }
 
   /// Task for handling incoming messages
   async fn handle_incoming(
     socket: Arc<UdpSocket>,
     pending_responses: Arc<Mutex<HashMap<MessageId, oneshot::Sender<ResponseMessage>>>>,
-    request_handler: Option<RequestHandler>,
+    request_handler: Arc<Mutex<Option<RequestHandler>>>,
   ) {
     let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
 
@@ -275,13 +108,14 @@ impl UdpNetwork {
                   }
                   KademliaMessage::Request(request) => {
                     debug!(request_type = ?request, "Got request");
-                    if let Some(handler) = &request_handler {
-                      // Forward the request to the node
+                    let handler_opt = { request_handler.lock().await.clone() };
+
+                    if let Some(handler) = handler_opt {
                       if let Err(e) = handler.send((request, src)).await {
                         error!(error = %e, "Failed to forward request to node");
                       }
                     } else {
-                      error!("No request handler set, dropping request");
+                      warn!("No request handler set, dropping request");
                     }
                   }
                 }

@@ -77,8 +77,8 @@ impl RoutingTable {
     if bucket.should_split() && index < KEY_LENGTH_BITS - 1 {
       let (bucket0, bucket1) = bucket.split();
       self.buckets.remove(&index);
-      self.buckets.insert(index + 1, bucket0);
-      self.buckets.insert(index + 2, bucket1); // Fixed: Use different indices for the two buckets
+      self.buckets.insert(index, bucket0);
+      self.buckets.insert(index + 1, bucket1);
 
       // Try adding the node again after the split
       return self.update(node);

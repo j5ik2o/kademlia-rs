@@ -1,9 +1,8 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::interval;
 
 use crate::network::udp::UdpNetwork;
@@ -37,31 +36,19 @@ pub struct Node<S: Storage, N: Network> {
   /// Network interface
   network: Arc<N>,
   /// Protocol handler
-  protocol: Protocol<S, N>,
+  protocol: Arc<Protocol<S, N>>,
 }
 
 // Implement Clone for Node
-impl<S: Storage + Clone, N: Network + Clone> Clone for Node<S, N> {
+impl<S: Storage, N: Network> Clone for Node<S, N> {
   fn clone(&self) -> Self {
-    let routing_table = Arc::new(RwLock::new(RoutingTable::new(self.node_id.clone())));
-    let storage = self.storage.clone();
-    let network = self.network.clone();
-
-    let protocol = Protocol::new(
-      self.node_id.clone(),
-      self.addr,
-      routing_table.clone(),
-      storage.clone(),
-      network.clone(),
-    );
-
     Node {
       node_id: self.node_id.clone(),
       addr: self.addr,
-      routing_table,
-      storage,
-      network,
-      protocol,
+      routing_table: Arc::clone(&self.routing_table),
+      storage: Arc::clone(&self.storage),
+      network: Arc::clone(&self.network),
+      protocol: Arc::clone(&self.protocol),
     }
   }
 }
@@ -73,13 +60,13 @@ impl<S: Storage, N: Network> Node<S, N> {
     let storage = Arc::new(RwLock::new(storage));
     let network = Arc::new(network);
 
-    let protocol = Protocol::new(
+    let protocol = Arc::new(Protocol::new(
       node_id.clone(),
       addr,
       routing_table.clone(),
       storage.clone(),
       network.clone(),
-    );
+    ));
 
     Node {
       node_id,
@@ -108,7 +95,7 @@ impl<S: Storage, N: Network> Node<S, N> {
 
   /// Get the node's protocol handler
   pub fn protocol(&self) -> &Protocol<S, N> {
-    &self.protocol
+    self.protocol.as_ref()
   }
 
   /// Start the node's background tasks
@@ -182,8 +169,10 @@ impl<S: Storage, N: Network> Node<S, N> {
 
     // Also ensure it's stored on bootstrap nodes by directly sending to known nodes
     tracing::debug!("Getting nodes from routing table");
-    let table = self.routing_table.read().await;
-    let nodes = table.get_all_nodes();
+    let nodes = {
+      let table = self.routing_table.read().await;
+      table.get_all_nodes()
+    };
 
     tracing::info!(
       node_count = nodes.len(),
@@ -388,19 +377,33 @@ impl Node<MemoryStorage, UdpNetwork> {
   pub async fn with_udp(addr: SocketAddr) -> Result<Self> {
     let node_id = NodeId::from_socket_addr(&addr);
 
-    // Create a shared storage for the network
-    let shared_storage = Arc::new(tokio::sync::Mutex::new(HashMap::<NodeId, Vec<u8>>::new()));
-
     // Create the storage
     let storage = MemoryStorage::with_name(&format!("node_{}", addr.port()));
 
-    // Create the network with the shared storage
-    let network = UdpNetwork::with_storage(addr, shared_storage).await?;
+    // Create the network
+    let network = UdpNetwork::new(addr).await?;
+
+    let (request_tx, mut request_rx) = mpsc::channel::<(RequestMessage, SocketAddr)>(128);
+    network.set_request_handler(request_tx).await;
 
     // Add debug log to verify storage synchronization for testing
     tracing::debug!("Created node with shared storage");
 
     // Create the node
-    Ok(Node::new(node_id, addr, storage, network))
+    let node = Node::new(node_id, addr, storage, network);
+
+    // Bridge incoming requests from the network to the protocol handler
+    let protocol = Arc::clone(&node.protocol);
+    tokio::spawn(async move {
+      tracing::info!("Starting UDP request dispatch loop");
+      while let Some((request, from)) = request_rx.recv().await {
+        if let Err(err) = protocol.handle_request(request, from).await {
+          tracing::warn!(error = ?err, "Failed to handle incoming request");
+        }
+      }
+      tracing::info!("UDP request dispatch loop stopped");
+    });
+
+    Ok(node)
   }
 }

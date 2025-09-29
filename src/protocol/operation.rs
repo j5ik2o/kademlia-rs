@@ -24,7 +24,8 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct Protocol<S, N>
 where
   S: Storage,
-  N: Network, {
+  N: Network,
+{
   /// Local node ID
   node_id: NodeId,
   /// Local node socket address
@@ -688,22 +689,23 @@ where
     tracing::info!(key = %key, "Stored value locally for key");
 
     // Fix: Find the K nodes closest to the key (compliant with Kademlia protocol)
-    let table = self.routing_table.read().await;
+    let nodes = {
+      let table = self.routing_table.read().await;
 
-    // First, get the K nodes closest to the key (ideal Kademlia implementation)
-    let closest_nodes = table.get_closest(&key, K);
-    tracing::info!(node_count = closest_nodes.len(), key = %key, "Found closest nodes to key");
+      // First, get the K nodes closest to the key (ideal Kademlia implementation)
+      let closest_nodes = table.get_closest(&key, K);
+      tracing::info!(node_count = closest_nodes.len(), key = %key, "Found closest nodes to key");
 
-    // Fallback: If no closest nodes are found, use all known nodes
-    let nodes = if closest_nodes.is_empty() {
-      let all_nodes = table.get_all_nodes();
-      tracing::info!(
-        node_count = all_nodes.len(),
-        "No closest nodes found, fallback to known nodes"
-      );
-      all_nodes
-    } else {
-      closest_nodes
+      if closest_nodes.is_empty() {
+        let all_nodes = table.get_all_nodes();
+        tracing::info!(
+          node_count = all_nodes.len(),
+          "No closest nodes found, fallback to known nodes"
+        );
+        all_nodes
+      } else {
+        closest_nodes
+      }
     };
 
     tracing::info!(node_count = nodes.len(), "Attempting to store on nodes");

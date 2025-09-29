@@ -1,12 +1,9 @@
-use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::{sleep, timeout};
 
 use kademlia::network::Node;
-use kademlia::node_id::NodeId;
 
 // Helper function to get a random available port
 async fn get_available_port() -> u16 {

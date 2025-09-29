@@ -1,10 +1,7 @@
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
-use tokio::signal;
 use tokio::time::sleep;
 
 use kademlia::network::Node;

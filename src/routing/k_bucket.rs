@@ -11,6 +11,13 @@ pub const K: usize = 20;
 /// The default timeout for considering a node as active
 pub const NODE_TIMEOUT: Duration = Duration::from_secs(60 * 15); // 15 minutes
 
+#[derive(Clone)]
+pub enum KBucketUpdate {
+  Unchanged,
+  Updated,
+  PendingPing(Node),
+}
+
 /// A k-bucket stores up to k contacts of nodes close to a given portion of the key space
 pub struct KBucket {
   /// Maximum number of nodes in the bucket
@@ -68,7 +75,7 @@ impl KBucket {
   }
 
   /// Adds a node to the bucket, or moves it to the back if it already exists
-  pub fn update(&mut self, mut node: Node) -> Result<()> {
+  pub fn update(&mut self, mut node: Node) -> Result<KBucketUpdate> {
     // Don't add the local node to any bucket
     if node.id == self.local_node_id {
       return Err(Error::Other("Cannot add local node to k-bucket".to_string()));
@@ -80,21 +87,21 @@ impl KBucket {
       let mut existing = self.nodes.remove(pos).unwrap();
       existing.update_last_seen();
       self.nodes.push_back(existing);
-      Ok(())
+      Ok(KBucketUpdate::Updated)
     } else if self.nodes.len() < self.k {
       // If the bucket is not full, add the node at the back
       node.update_last_seen();
       self.nodes.push_back(node);
-      Ok(())
+      Ok(KBucketUpdate::Updated)
     } else {
       // If the bucket is full, check if the least-recently seen node is still active
-      let front_node = &self.nodes[0];
+      let front_node = self.nodes.front().cloned().expect("bucket not empty");
       if !front_node.is_active(NODE_TIMEOUT) {
         // If the least-recently seen node is inactive, remove it and add the new node
         self.nodes.pop_front();
         node.update_last_seen();
         self.nodes.push_back(node);
-        Ok(())
+        Ok(KBucketUpdate::Updated)
       } else {
         // Otherwise, add to the replacement cache
         // Remove any existing entry for this node in the cache
@@ -105,9 +112,7 @@ impl KBucket {
         // Add to the replacement cache (used when a node becomes inactive)
         node.update_last_seen();
         self.replacement_cache.push_back(node);
-
-        // Let the caller know that the node wasn't added to the main bucket
-        Err(Error::Other("K-bucket is full with active nodes".to_string()))
+        Ok(KBucketUpdate::PendingPing(front_node))
       }
     }
   }

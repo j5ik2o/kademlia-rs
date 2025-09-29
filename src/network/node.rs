@@ -251,11 +251,8 @@ impl<S: Storage, N: Network> Node<S, N> {
     let bootstrap_node = ContactNode::with_addr(bootstrap_addr);
 
     // Add bootstrap node directly to our routing table first
-    {
-      let mut table = self.routing_table.write().await;
-      let _ = table.update(bootstrap_node.clone());
-      tracing::info!("First added bootstrap node directly to routing table");
-    }
+    let _ = self.protocol.record_contact(&bootstrap_node).await?;
+    tracing::info!("First added bootstrap node directly to routing table");
 
     // Ping the bootstrap node to validate it
     match self.protocol.ping(&bootstrap_node).await {
@@ -264,25 +261,7 @@ impl<S: Storage, N: Network> Node<S, N> {
 
         // Manually update our routing table with the bootstrap node from response
         {
-          let mut table = self.routing_table.write().await;
-          let _ = table.update(response.sender().clone());
-          let node_count = table.node_count();
-          tracing::info!(
-            node_count = node_count,
-            "Then added bootstrap node from response to routing table"
-          );
-
-          // Debug: Print all nodes
-          let all_nodes = table.get_all_nodes();
-          tracing::debug!(node_count = all_nodes.len(), "Current routing table");
-          for (i, node) in all_nodes.iter().enumerate() {
-            tracing::debug!(
-              index = i + 1,
-              node_id = %node.id,
-              node_addr = %node.addr,
-              "Routing table entry"
-            );
-          }
+          let _ = self.protocol.record_contact(response.sender()).await?;
         }
 
         // Find the closest nodes to ourselves to populate our routing table

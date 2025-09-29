@@ -10,7 +10,7 @@ use tokio::time::timeout;
 use crate::node::Node;
 use crate::node_id::NodeId;
 use crate::protocol::message::{KademliaMessage, MessageId, RequestMessage, ResponseMessage};
-use crate::routing::{RoutingTable, K};
+use crate::routing::{RoutingTable, UpdateStatus, K};
 use crate::storage::Storage;
 use crate::{Error, Result};
 
@@ -76,14 +76,7 @@ where
   /// Handle an incoming request
   pub async fn handle_request(&self, req: RequestMessage, from: SocketAddr) -> Result<()> {
     let sender = req.sender().clone();
-    let is_new_contact = if sender.id == self.node_id {
-      false
-    } else {
-      let mut table = self.routing_table.write().await;
-      let known = table.contains(&sender.id);
-      table.update(sender.clone())?;
-      !known
-    };
+    let is_new_contact = self.record_contact(&sender).await?;
 
     match req {
       RequestMessage::Ping { id, sender } => {
@@ -218,17 +211,12 @@ where
       Ok(result) => {
         let response = result?;
 
-        // Update routing table with the responding node
-        {
-          let mut table = self.routing_table.write().await;
-          table.update(response.sender().clone())?;
-        }
-
-        // Clean up pending request
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
         }
+
+        let _ = self.record_contact(response.sender()).await?;
 
         Ok(response)
       }
@@ -267,17 +255,12 @@ where
       Ok(result) => {
         let response = result?;
 
-        // Update routing table with the responding node
-        {
-          let mut table = self.routing_table.write().await;
-          table.update(response.sender().clone())?;
-        }
-
-        // Clean up pending request
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
         }
+
+        let _ = self.record_contact(response.sender()).await?;
 
         Ok(response)
       }
@@ -409,17 +392,12 @@ where
       Ok(result) => {
         let response = result?;
 
-        // Update routing table with the responding node
-        {
-          let mut table = self.routing_table.write().await;
-          table.update(response.sender().clone())?;
-        }
-
-        // Clean up pending request
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
         }
+
+        let _ = self.record_contact(response.sender()).await?;
 
         match response {
           ResponseMessage::NodesFound { nodes, .. } => Ok(nodes),
@@ -634,17 +612,12 @@ where
         let response = result?;
         tracing::debug!(response = ?response, "Received response in find_value_rpc");
 
-        // Update routing table with the responding node
-        {
-          let mut table = self.routing_table.write().await;
-          table.update(response.sender().clone())?;
-        }
-
-        // Clean up pending request
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
         }
+
+        let _ = self.record_contact(response.sender()).await?;
 
         match response {
           ResponseMessage::ValueFound { value, nodes, .. } => {
@@ -777,5 +750,68 @@ where
     }
 
     Ok(())
+  }
+
+  pub(crate) async fn record_contact(&self, node: &Node) -> Result<bool> {
+    if node.id == self.node_id {
+      return Ok(false);
+    }
+
+    let (status, was_known) = {
+      let mut table = self.routing_table.write().await;
+      let known = table.contains(&node.id);
+      let status = table.update(node.clone())?;
+      (status, known)
+    };
+
+    let mut inserted = !was_known && matches!(status, UpdateStatus::Updated);
+
+    if let UpdateStatus::PendingPing { node_to_ping } = status {
+      match self.health_check_ping(&node_to_ping).await {
+        Ok(()) => {
+          let mut table = self.routing_table.write().await;
+          table.node_seen(&node_to_ping.id)?;
+        }
+        Err(_) => {
+          {
+            let mut table = self.routing_table.write().await;
+            table.remove(&node_to_ping.id);
+          }
+          let mut table = self.routing_table.write().await;
+          if matches!(table.update(node.clone())?, UpdateStatus::Updated) && !was_known {
+            inserted = true;
+          }
+        }
+      }
+    }
+
+    Ok(inserted)
+  }
+
+  async fn health_check_ping(&self, node: &Node) -> Result<()> {
+    let id = rand::random::<MessageId>();
+    let local_node = Node::new(self.node_id.clone(), self.addr);
+    let request = RequestMessage::Ping { id, sender: local_node };
+
+    {
+      let mut pending = self.pending_requests.lock().await;
+      pending.insert(id, request.clone());
+    }
+
+    self.network.send(node.addr, KademliaMessage::Request(request)).await?;
+
+    match timeout(RPC_TIMEOUT, self.network.wait_response(id, RPC_TIMEOUT)).await {
+      Ok(result) => {
+        let _ = result?;
+        let mut pending = self.pending_requests.lock().await;
+        pending.remove(&id);
+        Ok(())
+      }
+      Err(_) => {
+        let mut pending = self.pending_requests.lock().await;
+        pending.remove(&id);
+        Err(Error::Timeout)
+      }
+    }
   }
 }

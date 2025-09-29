@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::node::Node;
 use crate::node_id::{NodeId, KEY_LENGTH_BITS};
-use crate::routing::k_bucket::{KBucket, K};
+use crate::routing::k_bucket::{KBucket, KBucketUpdate, K};
 use crate::Result;
 
 /// The routing table for a Kademlia node, consisting of k-buckets
@@ -14,6 +14,13 @@ pub struct RoutingTable {
   buckets: HashMap<usize, KBucket>,
   /// The k parameter (max nodes per bucket)
   k: usize,
+}
+
+#[derive(Clone)]
+pub enum UpdateStatus {
+  Unchanged,
+  Updated,
+  PendingPing { node_to_ping: Node },
 }
 
 impl RoutingTable {
@@ -67,31 +74,35 @@ impl RoutingTable {
   }
 
   /// Adds a node to the routing table or updates its position if already present
-  pub fn update(&mut self, node: Node) -> Result<()> {
+  pub fn update(&mut self, node: Node) -> Result<UpdateStatus> {
     if node.id == self.local_node_id {
-      return Ok(());
+      return Ok(UpdateStatus::Unchanged);
     }
 
     let index = match self.bucket_index(&node.id) {
       Some(idx) => idx,
-      None => return Ok(()),
+      None => return Ok(UpdateStatus::Unchanged),
     };
 
     let bucket = self.get_or_create_bucket(index);
-    let result = bucket.update(node.clone());
+    let update = bucket.update(node.clone())?;
 
-    // Check if the bucket should be split
     if bucket.should_split() && index < KEY_LENGTH_BITS - 1 {
       let (bucket0, bucket1) = bucket.split();
       self.buckets.remove(&index);
       self.buckets.insert(index, bucket0);
       self.buckets.insert(index + 1, bucket1);
 
-      // Try adding the node again after the split
       return self.update(node);
     }
 
-    result
+    let status = match update {
+      KBucketUpdate::Unchanged => UpdateStatus::Unchanged,
+      KBucketUpdate::Updated => UpdateStatus::Updated,
+      KBucketUpdate::PendingPing(node_to_ping) => UpdateStatus::PendingPing { node_to_ping },
+    };
+
+    Ok(status)
   }
 
   /// Updates a node's last seen timestamp and position in its bucket
@@ -102,7 +113,8 @@ impl RoutingTable {
           // Clone the node, update it, and call update
           let mut node_clone = node.clone();
           node_clone.update_last_seen();
-          return bucket.update(node_clone);
+          let _ = bucket.update(node_clone)?;
+          return Ok(());
         }
       }
     }

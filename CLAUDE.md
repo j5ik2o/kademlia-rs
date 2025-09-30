@@ -1,110 +1,189 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+このファイルは、このリポジトリのコードを扱う際にClaude Code (claude.ai/code) にガイダンスを提供します。
 
-## Commands
+## 重要な注意事項
 
-### Building and Running
+- **応対言語**: 必ず日本語で応対すること
+- **タスクの完了条件**: テストはすべてパスすること
+- **テストの扱い**: 行うべきテストをコメントアウトしたり無視したりしないこと
+- **実装方針**:
+  - 既存の多くの実装を参考にして、一貫性のあるコードを書くこと
+  - protoactor-go(@docs/sources/protoactor-go)の実装を参考にすること（Goの実装からRustイディオムに変換）
+- **後方互換性**: 後方互換は不要（破壊的変更を恐れずに最適な設計を追求すること）
+- **ドキュメント方針**: 文章構成は常に MECE（漏れなく・重複なく）を意識し、節・箇条書きの分割基準を明記すること。
+- **ドキュメント整理**: 終了済みタスクや履歴は適宜削除し、現状と今後のタスクだけを簡潔に記載すること（履歴は `git log` を参照）。
+- serena mcpを有効活用すること
+- 当該ディレクトリ以外を読まないこと
+- 作業の最後に cargo test を行うこと
+
+## コマンド
+
+### ビルドと実行
 
 ```bash
-# Build the library
-cargo build
+# ワークスペース全体をビルド
+cargo build --workspace
 
-# Run tests
-cargo test
+# リリースモードでビルド
+cargo build --release
 
-# Run a specific test
+# ユニットテストと統合テストを一括実行
+cargo test --workspace
+
+# 特定のテストを実行
 cargo test test_store_and_retrieve
 
-# Run with logging enabled
+# ログを有効にして実行
 RUST_LOG=debug cargo test
 
-# Run a simple bootstrap node (on port 8000)
+# ログ付きでテストを実行
+RUST_LOG=kademlia=debug cargo test -- --nocapture
+
+# ビルドせずにコードチェック
+cargo check
+
+# コードのフォーマット
+cargo fmt
+
+# リンターの実行
+cargo clippy
+
+# シンプルなブートストラップノードを実行（ポート8000）
 cargo run --example simple_node -- --port 8000 bootstrap
 
-# Join an existing network
+# 既存のネットワークに参加
 cargo run --example simple_node -- --port 8001 join --bootstrap 127.0.0.1:8000
 
-# Store a key-value pair
+# キーバリューペアを保存
 cargo run --example simple_node -- --port 8002 store --bootstrap 127.0.0.1:8000 --key mykey --value myvalue
 
-# Retrieve a value by key
+# キーで値を取得
 cargo run --example simple_node -- --port 8003 get --bootstrap 127.0.0.1:8000 --key mykey
 
-# Run the DHT test script
+# DHTテストスクリプトを実行（3ノード構成でのエンドツーエンド検証、約2分）
 ./test_dht.sh
 ```
 
-## Architecture
+## プロジェクト構成とモジュール整理
 
-This Rust implementation of the Kademlia distributed hash table is organized into several modules:
+- `src/` に Kademlia の主要モジュールを配置しています（`network/` は UDP 通信層、`protocol/` は RPC ロジック、`routing/` はルーティングテーブル、`node.rs`・`storage.rs` はノードとストレージ実装）。
+- `tests/` には統合テスト (`*_test.rs`) を配置し、実ネットワークに近いシナリオを検証します。`test_output/` にはシェルスクリプト実行時のログが出力されます。
+- `examples/simple_node.rs` は CLI サンプルで、`test_dht.sh` は 3 ノード構成でのエンドツーエンド動作を確認するスクリプトです。
 
-### Core Components
+## アーキテクチャ
+
+このKademlia分散ハッシュテーブルのRust実装は、複数のモジュールで構成されています：
+
+### コアコンポーネント
 
 1. **NodeID (`src/node_id/mod.rs`)**
-   - 160-bit node identifier used for uniquely identifying nodes
-   - Implements XOR-based distance metric for node comparisons
-   - Critical for determining proximity in the network
+   - ノードを一意に識別するための160ビットのノード識別子
+   - ノード比較のためのXORベースの距離メトリックを実装
+   - ネットワーク内の近接性を決定するために重要
 
 2. **Node (`src/node/mod.rs`)**
-   - Represents a contact in the Kademlia network
-   - Contains node ID and network address information
-   - Foundation for peer-to-peer communication
+   - Kademliaネットワーク内のコンタクトを表現
+   - ノードIDとネットワークアドレス情報を含む
+   - ピアツーピア通信の基盤
 
 3. **Routing Table (`src/routing/routing_table.rs`)**
-   - Manages k-buckets for efficient node lookup
-   - Keeps track of known nodes based on their distance
-   - Implements bucket splitting and node replacement strategies
+   - 効率的なノード検索のためのk-bucketsを管理
+   - 距離に基づいて既知のノードを追跡
+   - バケット分割とノード置換戦略を実装
 
 4. **K-Bucket (`src/routing/k_bucket.rs`)**
-   - Stores up to k contacts in a specific distance range
-   - Implements least-recently-seen eviction policy
-   - Handles node updates and replacements
+   - 特定の距離範囲内で最大k個のコンタクトを保存
+   - 最近使用されていないノードの退避ポリシーを実装
+   - ノードの更新と置換を処理
 
 5. **Protocol (`src/protocol/mod.rs`)**
-   - Defines the Kademlia protocol operations and messages
-   - Implements PING, STORE, FIND_NODE, and FIND_VALUE operations
-   - Handles message serialization and deserialization
+   - Kademliaプロトコルの操作とメッセージを定義
+   - PING、STORE、FIND_NODE、FIND_VALUEの操作を実装
+   - メッセージのシリアライゼーションとデシリアライゼーションを処理
 
 6. **Network (`src/network/mod.rs`, `src/network/udp.rs`, `src/network/node.rs`)**
-   - Implements UDP-based network communication
-   - Manages sending and receiving messages between nodes
-   - Handles node bootstrapping and joining the network
+   - UDPベースのネットワーク通信を実装
+   - ノード間のメッセージ送受信を管理
+   - ノードのブートストラップとネットワーク参加を処理
 
 7. **Storage (`src/storage/mod.rs`)**
-   - Provides key-value storage functionality
-   - Implements in-memory storage with TTL support
+   - キーバリューストレージ機能を提供
+   - TTLサポート付きのインメモリストレージを実装
 
 8. **Error Handling (`src/error/mod.rs`)**
-   - Defines error types for the entire library
-   - Provides clear error messages and handling mechanisms
+   - ライブラリ全体のエラータイプを定義
+   - 明確なエラーメッセージとハンドリングメカニズムを提供
 
-### Data Flow
+### データフロー
 
-1. When a node starts, it creates a random NodeID and initializes its routing table.
-2. To join a network, a node connects to a bootstrap node and performs a FIND_NODE operation for its own ID.
-3. The node populates its routing table with contacts from the bootstrap node's response.
-4. For STORE operations, the node locates the k closest nodes to the key and sends STORE messages to them.
-5. For FIND_VALUE operations, the node recursively asks nodes that are closer to the key until it finds the value or determines it doesn't exist.
+1. **ノード初期化**: ノードが起動すると、NodeID（ソケットアドレスまたはランダムから派生）を作成し、ルーティングテーブルを初期化します。
+2. **ネットワーク参加**: ネットワークに参加するには、ノードがブートストラップノードに接続し、自身のIDに対してFIND_NODE操作を実行して他のノードを発見します。
+3. **ルーティングテーブルの構築**: ノードはブートストラップノードの応答からコンタクトをルーティングテーブルに追加します。
+4. **STORE操作**: データを保存する際、ノードはまずローカルに保存し、次にルーティングテーブル内のすべての既知のノードにSTOREメッセージを送信します。
+5. **FIND_VALUE操作**: ノードはまずローカルストレージをチェックし、次にキーにより近いノードに再帰的にクエリを実行して、値を見つけるか存在しないと判断します。
+6. **バックグラウンドメンテナンス**: `Node::start()` 呼び出し時に3つのバックグラウンドタスクが自動起動します：
+   - リフレッシュタスク: ルーティングテーブルを新鮮に保つために、1時間ごとにバケットごとのランダムIDを検索
+   - 再公開タスク: 24時間ごとに保存されたキーバリューペアを再公開
+   - 有効期限チェック: 1時間ごとに期限切れエントリをクリーンアップ
 
-### UDP Communication
+### UDP通信
 
-- The implementation uses asynchronous UDP sockets for communication between nodes.
-- Messages are serialized using bincode for efficient transmission.
-- Timeout handling is implemented to deal with network delays and node failures.
+- 実装はノード間の通信に非同期UDPソケットを使用します。
+- メッセージは効率的な転送のためにbincodeを使用してシリアライズされます。
+- ネットワーク遅延とノード障害に対処するためのタイムアウト処理が実装されています。
 
-## Implementation Notes
+## 実装ノート
 
-1. This implementation is a research/educational project and may not be production-ready.
+1. **プロジェクトステータス**: これは研究/教育プロジェクトであり、本番環境対応ではない可能性があります。
 
-2. The current implementation uses in-memory storage which is not persistent across restarts.
+2. **ストレージ**: 現在の実装はインメモリストレージ（`MemoryStorage`）を使用しており、再起動時に永続化されません。データはTTLサポート付きで保存されますが、ノードが停止すると失われます。
 
-3. The codebase uses Tokio for asynchronous runtime and relies heavily on async/await patterns.
+3. **非同期ランタイム**: コードベースは非同期ランタイムにTokioを使用し、async/awaitパターンに大きく依存しています。すべてのネットワーク操作はノンブロッキングです。
 
-4. When testing with multiple nodes, ensure unique port numbers for each node.
+4. **ポート管理**: 複数のノードでテストする際は、各ノードに一意のポート番号を使用してください。プロセス終了後もポートは短時間使用中のままになる可能性があるため、連続して複数のコマンドを実行する際はポート番号をインクリメントしてください。テストでは `get_available_port()` ヘルパーを利用し、固定ポートはスクリプト内に限定することを推奨します。
 
-5. UDP communication doesn't guarantee message delivery - the implementation handles retries and timeouts.
+5. **ネットワーク信頼性**: UDP通信はメッセージ配信を保証しません。実装は重要な操作に対して30秒のタイムアウトでリトライを処理します。
 
-6. Bootstrap nodes play a crucial role - they must be running before other nodes can join the network.
+6. **ブートストラップノード**: ブートストラップノードは不可欠です。他のノードがネットワークに参加する前に実行されている必要があります。参加時にブートストラップノードはルーティングテーブルに直接追加されます。
 
-7. The implementation follows the original Kademlia paper's approach with k-buckets and XOR distance metrics.
+7. **キーハッシング**: キーは`NodeId::from_bytes`を使用してSHA-256で一貫してNodeIdにハッシュされます。これにより、同じキーは常にすべてのノードで同じNodeIdにマッピングされます。
+
+8. **Kademliaパラメータ**: 実装はk=20（バケットあたりの最大ノード数）と160ビットのノードIDを使用し、元のKademlia論文のアプローチに従ってk-bucketsとXOR距離メトリックを使用しています。
+
+9. **バックグラウンドタスク**: ノードを生成したら必ず `Node::start()` を呼び、バックグラウンドタスク（ルーティングリフレッシュ・再複製・ストレージクリーンアップ）を稼働させてください。
+
+## 主要概念
+
+### NodeID生成
+- `NodeId::from_socket_addr(&addr)`: ソケットアドレスからの決定的ID
+- `NodeId::random()`: プライバシー/テスト用のランダムID
+- `NodeId::from_bytes(key)`: SHA-256経由で任意のキーをNodeIdに変換
+
+### ルーティングテーブルのメカニズム
+- **バケット分割**: バケットが満杯で分割すべき場合（距離範囲に基づいて）、より具体的な範囲を持つ2つのバケットに分割されます。
+- **LRU退避**: バケットが満杯のとき、最近使用されていないノードが最初に退避されます。
+- **保留中のPing**: バケットが満杯の場合、退避前に最近使用されていないノードにpingが送信されます。
+
+### プロトコルフロー
+- **PING**: シンプルな生存確認、送信者情報を返す
+- **STORE**: 受信ノードのローカルストレージに値を保存
+- **FIND_NODE**: ルーティングテーブルからターゲットに最も近いk個のノードを返す
+- **FIND_VALUE**: ローカルに保存されている場合は値を返し、そうでない場合は最も近いk個のノードを返す
+
+## コーディングスタイルと命名規則
+
+- Rust 2021 Edition。`rustfmt.toml` に従い `cargo fmt` を実行してください。
+- ファイル／モジュールは `snake_case`、型は `CamelCase`、定数は `SCREAMING_SNAKE_CASE`。
+- ログ出力は `tracing` マクロ（`info!`, `debug!` など）を用い、可能な限りフィールド付きの構造化ログにします。
+
+## テストガイドライン
+
+- 実装ファイル直下にユニットテストを併設し（例：`src/node_id.rs`）、ネットワークを伴うケースは `tests/` に `#[tokio::test]` で実装します。
+- 統合テストファイルは `*_test.rs` 命名とし、テスト関数はシナリオを明確に表現してください。
+- regressions では `cargo test --workspace` と `./test_dht.sh` の両方を実行し、PR の検証欄に結果を記載します。
+
+## コミットおよび PR ルール
+
+- コミットメッセージは命令形・50文字前後（例：`Improve routing maintenance`）。フォーマット変更とロジック変更は分離してください。
+- PR には背景、主な変更点、検証手順（`cargo test`, `test_dht.sh` など）、関連 Issue をまとめます。ネットワーク挙動に触れる場合はログ抜粋やスクリーンショットを添付するとレビューが円滑です。

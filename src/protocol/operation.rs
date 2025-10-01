@@ -24,8 +24,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct Protocol<S, N>
 where
   S: Storage,
-  N: Network,
-{
+  N: Network, {
   /// Local node ID
   node_id: NodeId,
   /// Local node socket address

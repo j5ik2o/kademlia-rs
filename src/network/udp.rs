@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::net::UdpSocket;
@@ -14,6 +14,19 @@ use crate::protocol::{KademliaMessage, MessageId, RequestMessage, ResponseMessag
 use crate::{Error, Result};
 
 const MAX_DATAGRAM_SIZE: usize = 65507; // Max UDP packet size
+
+/// Rate limiting parameters
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60); // 1 minute window
+const MAX_REQUESTS_PER_WINDOW: usize = 100; // Max requests per IP per window
+
+/// Tracks rate limiting information for an IP address
+#[derive(Debug, Clone)]
+struct RateLimitEntry {
+  /// Timestamp of the window start
+  window_start: Instant,
+  /// Number of requests in the current window
+  request_count: usize,
+}
 
 // Channel for incoming request messages
 type RequestHandler = mpsc::Sender<(RequestMessage, SocketAddr)>;
@@ -28,6 +41,9 @@ pub struct UdpNetwork {
   pending_responses: Arc<Mutex<HashMap<MessageId, oneshot::Sender<ResponseMessage>>>>,
   /// Handler for incoming request messages
   request_handler: Arc<Mutex<Option<RequestHandler>>>,
+  /// Rate limiting table keyed by IP address
+  #[allow(dead_code)]
+  rate_limit_table: Arc<Mutex<HashMap<IpAddr, RateLimitEntry>>>,
 }
 
 impl UdpNetwork {
@@ -39,24 +55,26 @@ impl UdpNetwork {
 
     let (tx, rx) = mpsc::channel::<(SocketAddr, Vec<u8>)>(100);
     let pending_responses = Arc::new(Mutex::new(HashMap::new()));
-
     let request_handler = Arc::new(Mutex::new(None));
+    let rate_limit_table = Arc::new(Mutex::new(HashMap::new()));
 
     let udp = UdpNetwork {
       _socket: socket.clone(),
       sender: tx,
       pending_responses: pending_responses.clone(),
       request_handler: request_handler.clone(),
+      rate_limit_table: rate_limit_table.clone(),
     };
 
     // Spawn task for handling incoming messages
     let socket_clone = socket.clone();
     let pending_clone = pending_responses.clone();
     let handler_clone = request_handler.clone();
+    let rate_limit_clone = rate_limit_table.clone();
 
     tokio::spawn(async move {
       info!("Starting incoming message handler");
-      UdpNetwork::handle_incoming(socket_clone, pending_clone, handler_clone).await;
+      UdpNetwork::handle_incoming(socket_clone, pending_clone, handler_clone, rate_limit_clone).await;
     });
 
     // Spawn task for sending outgoing messages
@@ -75,11 +93,39 @@ impl UdpNetwork {
     *guard = Some(handler);
   }
 
+  /// Check if an IP address is rate limited
+  fn check_rate_limit(rate_limit_table: &mut HashMap<IpAddr, RateLimitEntry>, ip: IpAddr) -> bool {
+    let now = Instant::now();
+
+    let entry = rate_limit_table.entry(ip).or_insert_with(|| RateLimitEntry {
+      window_start: now,
+      request_count: 0,
+    });
+
+    // Check if the window has expired
+    if now.duration_since(entry.window_start) > RATE_LIMIT_WINDOW {
+      // Reset window
+      entry.window_start = now;
+      entry.request_count = 0;
+    }
+
+    // Check if limit is exceeded
+    if entry.request_count >= MAX_REQUESTS_PER_WINDOW {
+      warn!(ip = %ip, count = entry.request_count, "Rate limit exceeded for IP");
+      return false;
+    }
+
+    // Increment counter
+    entry.request_count += 1;
+    true
+  }
+
   /// Task for handling incoming messages
   async fn handle_incoming(
     socket: Arc<UdpSocket>,
     pending_responses: Arc<Mutex<HashMap<MessageId, oneshot::Sender<ResponseMessage>>>>,
     request_handler: Arc<Mutex<Option<RequestHandler>>>,
+    rate_limit_table: Arc<Mutex<HashMap<IpAddr, RateLimitEntry>>>,
   ) {
     let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
 
@@ -108,6 +154,19 @@ impl UdpNetwork {
                   }
                   KademliaMessage::Request(request) => {
                     debug!(request_type = ?request, "Got request");
+
+                    // Rate limit check for incoming requests
+                    let ip = src.ip();
+                    let is_allowed = {
+                      let mut rate_limit = rate_limit_table.lock().await;
+                      Self::check_rate_limit(&mut rate_limit, ip)
+                    };
+
+                    if !is_allowed {
+                      warn!(ip = %ip, "Dropping request due to rate limit");
+                      continue;
+                    }
+
                     let handler_opt = { request_handler.lock().await.clone() };
 
                     if let Some(handler) = handler_opt {

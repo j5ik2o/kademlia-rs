@@ -121,6 +121,38 @@ impl RoutingTable {
     Ok(())
   }
 
+  /// Record a successful response from a node
+  pub fn record_success(&mut self, node_id: &NodeId, response_time_ms: u64) -> Result<()> {
+    if let Some(index) = self.bucket_index(node_id) {
+      if let Some(bucket) = self.buckets.get_mut(&index) {
+        if let Some(node) = bucket.get(node_id) {
+          let mut node_clone = node.clone();
+          node_clone.response_stats.record_success();
+          node_clone.response_stats.record_response_time(response_time_ms);
+          node_clone.update_last_seen();
+          let _ = bucket.update(node_clone)?;
+          return Ok(());
+        }
+      }
+    }
+    Ok(())
+  }
+
+  /// Record a failed response from a node
+  pub fn record_failure(&mut self, node_id: &NodeId) -> Result<()> {
+    if let Some(index) = self.bucket_index(node_id) {
+      if let Some(bucket) = self.buckets.get_mut(&index) {
+        if let Some(node) = bucket.get(node_id) {
+          let mut node_clone = node.clone();
+          node_clone.response_stats.record_failure();
+          let _ = bucket.update(node_clone)?;
+          return Ok(());
+        }
+      }
+    }
+    Ok(())
+  }
+
   /// Removes a node from the routing table
   pub fn remove(&mut self, node_id: &NodeId) -> Option<Node> {
     let index = self.bucket_index(node_id)?;

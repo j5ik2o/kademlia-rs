@@ -19,6 +19,83 @@ impl Default for LastSeen {
   }
 }
 
+/// Response statistics for a node
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseStats {
+  /// Number of successful responses
+  pub successes: u32,
+  /// Number of failed or timed out responses
+  pub failures: u32,
+  /// Average response time in milliseconds (exponential moving average)
+  #[serde(default)]
+  pub avg_response_time_ms: Option<u64>,
+}
+
+impl Default for ResponseStats {
+  fn default() -> Self {
+    ResponseStats {
+      successes: 0,
+      failures: 0,
+      avg_response_time_ms: None,
+    }
+  }
+}
+
+impl ResponseStats {
+  /// Calculate the success rate (0.0 to 1.0)
+  pub fn success_rate(&self) -> f64 {
+    let total = self.successes + self.failures;
+    if total == 0 {
+      1.0 // New nodes get benefit of the doubt
+    } else {
+      self.successes as f64 / total as f64
+    }
+  }
+
+  /// Check if the node is reliable (success rate >= threshold)
+  pub fn is_reliable(&self, threshold: f64) -> bool {
+    self.success_rate() >= threshold
+  }
+
+  /// Record a successful response
+  pub fn record_success(&mut self) {
+    self.successes = self.successes.saturating_add(1);
+  }
+
+  /// Record a failed response
+  pub fn record_failure(&mut self) {
+    self.failures = self.failures.saturating_add(1);
+  }
+
+  /// Record response time using exponential moving average
+  /// alpha = 0.2 gives more weight to recent observations
+  pub fn record_response_time(&mut self, response_time_ms: u64) {
+    const ALPHA: f64 = 0.2;
+    match self.avg_response_time_ms {
+      None => {
+        self.avg_response_time_ms = Some(response_time_ms);
+      }
+      Some(avg) => {
+        let new_avg = (ALPHA * response_time_ms as f64) + ((1.0 - ALPHA) * avg as f64);
+        self.avg_response_time_ms = Some(new_avg as u64);
+      }
+    }
+  }
+
+  /// Get adaptive timeout based on average response time
+  /// Returns timeout = avg_response_time * multiplier + base_timeout
+  pub fn adaptive_timeout(&self, multiplier: f64, base_timeout: Duration) -> Duration {
+    match self.avg_response_time_ms {
+      None => base_timeout, // No history, use default
+      Some(avg_ms) => {
+        let adaptive_ms = (avg_ms as f64 * multiplier) as u64;
+        let total_ms = adaptive_ms + base_timeout.as_millis() as u64;
+        Duration::from_millis(total_ms.min(30000)) // Cap at 30 seconds
+      }
+    }
+  }
+}
+
 /// Represents a node in the Kademlia network
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -28,6 +105,9 @@ pub struct Node {
   pub addr: SocketAddr,
   /// Last time of successful communication with this node
   pub last_seen: LastSeen,
+  /// Response statistics for reliability tracking
+  #[serde(default)]
+  pub response_stats: ResponseStats,
 }
 
 impl Node {
@@ -37,6 +117,7 @@ impl Node {
       id,
       addr,
       last_seen: LastSeen::Never,
+      response_stats: ResponseStats::default(),
     }
   }
 

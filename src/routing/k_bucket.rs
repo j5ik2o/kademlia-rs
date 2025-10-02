@@ -11,6 +11,9 @@ pub const K: usize = 20;
 /// The default timeout for considering a node as active
 pub const NODE_TIMEOUT: Duration = Duration::from_secs(60 * 15); // 15 minutes
 
+/// Minimum success rate threshold for keeping a node in the bucket
+pub const MIN_SUCCESS_RATE: f64 = 0.5; // 50% success rate
+
 #[derive(Clone)]
 pub enum KBucketUpdate {
   Unchanged,
@@ -94,7 +97,27 @@ impl KBucket {
       self.nodes.push_back(node);
       Ok(KBucketUpdate::Updated)
     } else {
-      // If the bucket is full, check if the least-recently seen node is still active
+      // If the bucket is full, check if any node is unreliable or inactive
+      // Priority: unreliable nodes > inactive nodes > LRU nodes
+
+      // First, try to find an unreliable node (success rate < threshold)
+      if let Some(pos) = self
+        .nodes
+        .iter()
+        .position(|n| !n.response_stats.is_reliable(MIN_SUCCESS_RATE))
+      {
+        let unreliable_node = self.nodes.remove(pos).unwrap();
+        node.update_last_seen();
+        self.nodes.push_back(node);
+        tracing::info!(
+          removed_node = %unreliable_node.id,
+          success_rate = unreliable_node.response_stats.success_rate(),
+          "Removed unreliable node from k-bucket"
+        );
+        return Ok(KBucketUpdate::Updated);
+      }
+
+      // Second, check if the least-recently seen node is inactive
       let front_node = self.nodes.front().cloned().expect("bucket not empty");
       if !front_node.is_active(NODE_TIMEOUT) {
         // If the least-recently seen node is inactive, remove it and add the new node

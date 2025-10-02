@@ -204,15 +204,35 @@ where
       pending.insert(id, request.clone());
     }
 
+    // Calculate adaptive timeout based on node's response history
+    let adaptive_timeout = {
+      let table = self.routing_table.read().await;
+      if let Some(existing_node) = table.get(&node.id) {
+        existing_node
+          .response_stats
+          .adaptive_timeout(3.0, Duration::from_secs(5))
+      } else {
+        RPC_TIMEOUT
+      }
+    };
+
     self.network.send(node.addr, KademliaMessage::Request(request)).await?;
 
-    match timeout(RPC_TIMEOUT, self.network.wait_response(id, RPC_TIMEOUT)).await {
+    let start = std::time::Instant::now();
+    match timeout(adaptive_timeout, self.network.wait_response(id, adaptive_timeout)).await {
       Ok(result) => {
         let response = result?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
 
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
+        }
+
+        // Record success with response time
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_success(&node.id, elapsed_ms);
         }
 
         let _ = self.record_contact(response.sender()).await?;
@@ -224,6 +244,12 @@ where
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
+        }
+
+        // Record failure
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_failure(&node.id);
         }
 
         Err(Error::Timeout)
@@ -248,15 +274,35 @@ where
       pending.insert(id, request.clone());
     }
 
+    // Calculate adaptive timeout
+    let adaptive_timeout = {
+      let table = self.routing_table.read().await;
+      if let Some(existing_node) = table.get(&node.id) {
+        existing_node
+          .response_stats
+          .adaptive_timeout(3.0, Duration::from_secs(5))
+      } else {
+        RPC_TIMEOUT
+      }
+    };
+
     self.network.send(node.addr, KademliaMessage::Request(request)).await?;
 
-    match timeout(RPC_TIMEOUT, self.network.wait_response(id, RPC_TIMEOUT)).await {
+    let start = std::time::Instant::now();
+    match timeout(adaptive_timeout, self.network.wait_response(id, adaptive_timeout)).await {
       Ok(result) => {
         let response = result?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
 
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
+        }
+
+        // Record success with response time
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_success(&node.id, elapsed_ms);
         }
 
         let _ = self.record_contact(response.sender()).await?;
@@ -268,6 +314,12 @@ where
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
+        }
+
+        // Record failure
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_failure(&node.id);
         }
 
         Err(Error::Timeout)
@@ -385,15 +437,35 @@ where
       pending.insert(id, request.clone());
     }
 
+    // Calculate adaptive timeout
+    let adaptive_timeout = {
+      let table = self.routing_table.read().await;
+      if let Some(existing_node) = table.get(&node.id) {
+        existing_node
+          .response_stats
+          .adaptive_timeout(3.0, Duration::from_secs(5))
+      } else {
+        RPC_TIMEOUT
+      }
+    };
+
     self.network.send(node.addr, KademliaMessage::Request(request)).await?;
 
-    match timeout(RPC_TIMEOUT, self.network.wait_response(id, RPC_TIMEOUT)).await {
+    let start = std::time::Instant::now();
+    match timeout(adaptive_timeout, self.network.wait_response(id, adaptive_timeout)).await {
       Ok(result) => {
         let response = result?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
 
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
+        }
+
+        // Record success with response time
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_success(&node.id, elapsed_ms);
         }
 
         let _ = self.record_contact(response.sender()).await?;
@@ -408,6 +480,12 @@ where
         {
           let mut pending = self.pending_requests.lock().await;
           pending.remove(&id);
+        }
+
+        // Record failure
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_failure(&node.id);
         }
 
         Err(Error::Timeout)
@@ -797,18 +875,49 @@ where
       pending.insert(id, request.clone());
     }
 
+    // Calculate adaptive timeout
+    let adaptive_timeout = {
+      let table = self.routing_table.read().await;
+      if let Some(existing_node) = table.get(&node.id) {
+        existing_node
+          .response_stats
+          .adaptive_timeout(3.0, Duration::from_secs(5))
+      } else {
+        RPC_TIMEOUT
+      }
+    };
+
     self.network.send(node.addr, KademliaMessage::Request(request)).await?;
 
-    match timeout(RPC_TIMEOUT, self.network.wait_response(id, RPC_TIMEOUT)).await {
+    let start = std::time::Instant::now();
+    match timeout(adaptive_timeout, self.network.wait_response(id, adaptive_timeout)).await {
       Ok(result) => {
         let _ = result?;
-        let mut pending = self.pending_requests.lock().await;
-        pending.remove(&id);
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        {
+          let mut pending = self.pending_requests.lock().await;
+          pending.remove(&id);
+        }
+
+        // Record success with response time
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_success(&node.id, elapsed_ms);
+        }
+
         Ok(())
       }
       Err(_) => {
         let mut pending = self.pending_requests.lock().await;
         pending.remove(&id);
+
+        // Record failure
+        {
+          let mut table = self.routing_table.write().await;
+          let _ = table.record_failure(&node.id);
+        }
+
         Err(Error::Timeout)
       }
     }

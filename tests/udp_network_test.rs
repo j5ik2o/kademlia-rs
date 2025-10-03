@@ -1,14 +1,15 @@
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 
 use kademlia::network::udp::UdpNetwork;
 use kademlia::node::Node;
 use kademlia::node_id::NodeId;
-use kademlia::protocol::{KademliaMessage, MessageId, Network, RequestMessage, ResponseMessage};
+use kademlia::protocol::{KademliaMessage, MessageId, Network, RequestHandler, RequestMessage, ResponseMessage};
 use kademlia::Result;
 
 // 利用可能なポートを取得するヘルパー関数
@@ -18,54 +19,61 @@ async fn get_available_port() -> u16 {
   socket.local_addr().unwrap().port()
 }
 
-async fn setup_test_handler(network: Arc<UdpNetwork>, storage: Arc<Mutex<HashMap<NodeId, Vec<u8>>>>) {
-  let (tx, mut rx) = mpsc::channel::<(RequestMessage, SocketAddr)>(100);
-  network.set_request_handler(tx).await;
+struct TestRequestHandler {
+  network: Arc<UdpNetwork>,
+  storage: Arc<Mutex<HashMap<NodeId, Vec<u8>>>>,
+}
 
-  let network_clone = Arc::clone(&network);
-  let storage_clone = Arc::clone(&storage);
+#[async_trait]
+impl RequestHandler for TestRequestHandler {
+  async fn handle_request(&self, request: RequestMessage, from: SocketAddr) {
+    let response = match request {
+      RequestMessage::Ping { id, sender } => ResponseMessage::Pong { request_id: id, sender },
+      RequestMessage::FindNode { id, sender, .. } => ResponseMessage::NodesFound {
+        request_id: id,
+        sender: sender.clone(),
+        nodes: vec![sender],
+      },
+      RequestMessage::FindValue { id, sender, key } => {
+        let value = {
+          let storage = self.storage.lock().await;
+          storage.get(&key).cloned()
+        };
 
-  tokio::spawn(async move {
-    while let Some((request, from)) = rx.recv().await {
-      let response = match request {
-        RequestMessage::Ping { id, sender } => ResponseMessage::Pong { request_id: id, sender },
-        RequestMessage::FindNode { id, sender, .. } => ResponseMessage::NodesFound {
+        ResponseMessage::ValueFound {
           request_id: id,
           sender: sender.clone(),
+          value,
           nodes: vec![sender],
-        },
-        RequestMessage::FindValue { id, sender, key } => {
-          let value = {
-            let storage = storage_clone.lock().await;
-            storage.get(&key).cloned()
-          };
-
-          ResponseMessage::ValueFound {
-            request_id: id,
-            sender: sender.clone(),
-            value,
-            nodes: vec![sender],
-          }
         }
-        RequestMessage::Store { id, sender, key, value } => {
-          {
-            let mut storage = storage_clone.lock().await;
-            storage.insert(key, value.clone());
-          }
-
-          ResponseMessage::StoreResult {
-            request_id: id,
-            sender,
-            success: true,
-          }
-        }
-      };
-
-      if let Err(e) = network_clone.send(from, KademliaMessage::Response(response)).await {
-        eprintln!("failed to send response in test handler: {e}");
       }
+      RequestMessage::Store { id, sender, key, value } => {
+        {
+          let mut storage = self.storage.lock().await;
+          storage.insert(key, value.clone());
+        }
+
+        ResponseMessage::StoreResult {
+          request_id: id,
+          sender,
+          success: true,
+        }
+      }
+    };
+
+    if let Err(e) = self.network.send(from, KademliaMessage::Response(response)).await {
+      eprintln!("failed to send response in test handler: {e}");
     }
+  }
+}
+
+async fn setup_test_handler(network: Arc<UdpNetwork>, storage: Arc<Mutex<HashMap<NodeId, Vec<u8>>>>) -> Result<()> {
+  let handler = Arc::new(TestRequestHandler {
+    network: Arc::clone(&network),
+    storage,
   });
+  network.set_request_handler(handler).await?;
+  Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -94,7 +102,7 @@ async fn test_ping_request_response() -> Result<()> {
   let receiver_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), receiver_port);
   let _receiver_udp = Arc::new(UdpNetwork::new(receiver_addr).await?);
   let storage = Arc::new(Mutex::new(HashMap::new()));
-  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await;
+  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await?;
 
   // 送信側のノードを作成
   let sender_id = NodeId::random();
@@ -139,7 +147,7 @@ async fn test_find_node_request_response() -> Result<()> {
   let receiver_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), receiver_port);
   let _receiver_udp = Arc::new(UdpNetwork::new(receiver_addr).await?);
   let storage = Arc::new(Mutex::new(HashMap::new()));
-  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await;
+  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await?;
 
   // 送信側のノードを作成
   let sender_id = NodeId::random();
@@ -193,7 +201,7 @@ async fn test_find_value_request_response() -> Result<()> {
   let receiver_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), receiver_port);
   let _receiver_udp = Arc::new(UdpNetwork::new(receiver_addr).await?);
   let storage = Arc::new(Mutex::new(HashMap::new()));
-  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await;
+  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await?;
 
   // 送信側のノードを作成
   let sender_id = NodeId::random();
@@ -259,7 +267,7 @@ async fn test_store_request_response() -> Result<()> {
   let receiver_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), receiver_port);
   let _receiver_udp = Arc::new(UdpNetwork::new(receiver_addr).await?);
   let storage = Arc::new(Mutex::new(HashMap::new()));
-  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await;
+  setup_test_handler(Arc::clone(&_receiver_udp), Arc::clone(&storage)).await?;
 
   // 送信側のノードを作成
   let sender_id = NodeId::random();
@@ -356,23 +364,26 @@ async fn test_custom_request_handler() -> Result<()> {
   let sender_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), sender_port);
   let sender_udp = UdpNetwork::new(sender_addr).await?;
 
-  // カスタムリクエストハンドラを作成
-  let (tx, mut rx) = mpsc::channel::<(RequestMessage, SocketAddr)>(10);
-  receiver_udp.set_request_handler(tx).await;
+  struct CustomHandler {
+    network: Arc<UdpNetwork>,
+  }
 
-  let network_clone = Arc::clone(&receiver_udp);
-  tokio::spawn(async move {
-    while let Some((request, from)) = rx.recv().await {
-      let response = match request {
-        RequestMessage::Ping { id, sender } => ResponseMessage::Pong { request_id: id, sender },
-        _ => unreachable!(),
-      };
-
-      if let Err(e) = network_clone.send(from, KademliaMessage::Response(response)).await {
-        eprintln!("custom handler failed to send response: {e}");
+  #[async_trait]
+  impl RequestHandler for CustomHandler {
+    async fn handle_request(&self, request: RequestMessage, from: SocketAddr) {
+      if let RequestMessage::Ping { id, sender } = request {
+        let response = ResponseMessage::Pong { request_id: id, sender };
+        if let Err(e) = self.network.send(from, KademliaMessage::Response(response)).await {
+          eprintln!("custom handler failed to send response: {e}");
+        }
       }
     }
+  }
+
+  let handler = Arc::new(CustomHandler {
+    network: Arc::clone(&receiver_udp),
   });
+  receiver_udp.set_request_handler(handler).await?;
 
   // 送信側のノードを作成
   let sender_id = NodeId::random();

@@ -9,8 +9,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
-use crate::protocol::Network;
-use crate::protocol::{KademliaMessage, MessageId, RequestMessage, ResponseMessage};
+use crate::protocol::{KademliaMessage, MessageId, Network, RequestHandler, ResponseMessage};
 use crate::{Error, Result};
 
 const MAX_DATAGRAM_SIZE: usize = 65507; // Max UDP packet size
@@ -28,9 +27,6 @@ struct RateLimitEntry {
   request_count: usize,
 }
 
-// Channel for incoming request messages
-type RequestHandler = mpsc::Sender<(RequestMessage, SocketAddr)>;
-
 /// UDP implementation of the Network trait
 pub struct UdpNetwork {
   /// The local socket (held to keep the listener alive for background tasks)
@@ -40,7 +36,7 @@ pub struct UdpNetwork {
   /// Map of pending response channels keyed by message ID
   pending_responses: Arc<Mutex<HashMap<MessageId, oneshot::Sender<ResponseMessage>>>>,
   /// Handler for incoming request messages
-  request_handler: Arc<Mutex<Option<RequestHandler>>>,
+  request_handler: Arc<Mutex<Option<Arc<dyn RequestHandler>>>>,
   /// Rate limiting table keyed by IP address
   #[allow(dead_code)]
   rate_limit_table: Arc<Mutex<HashMap<IpAddr, RateLimitEntry>>>,
@@ -87,12 +83,6 @@ impl UdpNetwork {
     Ok(udp)
   }
 
-  /// Set the handler for incoming request messages
-  pub async fn set_request_handler(&self, handler: RequestHandler) {
-    let mut guard = self.request_handler.lock().await;
-    *guard = Some(handler);
-  }
-
   /// Check if an IP address is rate limited
   fn check_rate_limit(rate_limit_table: &mut HashMap<IpAddr, RateLimitEntry>, ip: IpAddr) -> bool {
     let now = Instant::now();
@@ -124,7 +114,7 @@ impl UdpNetwork {
   async fn handle_incoming(
     socket: Arc<UdpSocket>,
     pending_responses: Arc<Mutex<HashMap<MessageId, oneshot::Sender<ResponseMessage>>>>,
-    request_handler: Arc<Mutex<Option<RequestHandler>>>,
+    request_handler: Arc<Mutex<Option<Arc<dyn RequestHandler>>>>,
     rate_limit_table: Arc<Mutex<HashMap<IpAddr, RateLimitEntry>>>,
   ) {
     let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
@@ -170,9 +160,10 @@ impl UdpNetwork {
                     let handler_opt = { request_handler.lock().await.clone() };
 
                     if let Some(handler) = handler_opt {
-                      if let Err(e) = handler.send((request, src)).await {
-                        error!(error = %e, "Failed to forward request to node");
-                      }
+                      let handler = handler.clone();
+                      tokio::spawn(async move {
+                        handler.handle_request(request, src).await;
+                      });
                     } else {
                       warn!("No request handler set, dropping request");
                     }
@@ -278,5 +269,11 @@ impl Network for UdpNetwork {
         Err(Error::Timeout)
       }
     }
+  }
+
+  async fn set_request_handler(&self, handler: Arc<dyn RequestHandler>) -> Result<()> {
+    let mut guard = self.request_handler.lock().await;
+    *guard = Some(handler);
+    Ok(())
   }
 }

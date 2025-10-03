@@ -39,6 +39,13 @@ where
   pending_requests: Arc<Mutex<HashMap<MessageId, RequestMessage>>>,
 }
 
+/// Handler callback invoked when the network layer receives an RPC request.
+#[async_trait]
+pub trait RequestHandler: Send + Sync + 'static {
+  /// Process an inbound request from a remote socket address.
+  async fn handle_request(&self, request: RequestMessage, from: SocketAddr);
+}
+
 /// Network interface for sending and receiving messages
 #[async_trait]
 pub trait Network: Send + Sync + 'static {
@@ -47,6 +54,9 @@ pub trait Network: Send + Sync + 'static {
 
   /// Wait for a response to a specific request
   async fn wait_response(&self, request_id: MessageId, timeout: Duration) -> Result<ResponseMessage>;
+
+  /// Register a handler for inbound request messages
+  async fn set_request_handler(&self, handler: Arc<dyn RequestHandler>) -> Result<()>;
 }
 
 impl<S, N> Protocol<S, N>

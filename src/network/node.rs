@@ -1,14 +1,16 @@
+use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use tokio::time::interval;
 
+use crate::network::tcp::TcpNetwork;
 use crate::network::udp::UdpNetwork;
 use crate::node::Node as ContactNode;
 use crate::node_id::NodeId;
-use crate::protocol::{Network, Protocol, RequestMessage};
+use crate::protocol::{Network, Protocol, RequestHandler, RequestMessage};
 use crate::routing::RoutingTable;
 use crate::storage::{MemoryStorage, Storage};
 use crate::{Error, Result};
@@ -49,6 +51,29 @@ impl<S: Storage, N: Network> Clone for Node<S, N> {
       storage: Arc::clone(&self.storage),
       network: Arc::clone(&self.network),
       protocol: Arc::clone(&self.protocol),
+    }
+  }
+}
+
+struct ProtocolRequestForwarder<S: Storage, N: Network> {
+  protocol: Arc<Protocol<S, N>>,
+}
+
+impl<S: Storage, N: Network> ProtocolRequestForwarder<S, N> {
+  fn new(protocol: Arc<Protocol<S, N>>) -> Self {
+    Self { protocol }
+  }
+}
+
+#[async_trait]
+impl<S, N> RequestHandler for ProtocolRequestForwarder<S, N>
+where
+  S: Storage,
+  N: Network,
+{
+  async fn handle_request(&self, request: RequestMessage, from: SocketAddr) {
+    if let Err(err) = self.protocol.handle_request(request, from).await {
+      tracing::warn!(?err, "Failed to handle incoming request");
     }
   }
 }
@@ -96,6 +121,18 @@ impl<S: Storage, N: Network> Node<S, N> {
   /// Get the node's protocol handler
   pub fn protocol(&self) -> &Protocol<S, N> {
     self.protocol.as_ref()
+  }
+
+  /// Clone the underlying network handle
+  pub fn network(&self) -> Arc<N> {
+    Arc::clone(&self.network)
+  }
+
+  /// Install the protocol as the default request handler on the network
+  pub async fn set_default_request_handler(&self) -> Result<()> {
+    let protocol = Arc::clone(&self.protocol);
+    let handler = Arc::new(ProtocolRequestForwarder::new(protocol));
+    self.network().set_request_handler(handler).await
   }
 
   /// Start the node's background tasks
@@ -361,6 +398,22 @@ impl<S: Storage, N: Network> Node<S, N> {
   }
 }
 
+/// Convenience implementation for using TCP transport with memory storage
+impl Node<MemoryStorage, TcpNetwork> {
+  /// Create a new Kademlia node with TCP transport and memory storage
+  pub async fn with_tcp(addr: SocketAddr) -> Result<Self> {
+    let node_id = NodeId::from_socket_addr(&addr);
+
+    let storage = MemoryStorage::with_name(&format!("tcp_node_{}", addr.port()));
+    let network = TcpNetwork::new(addr).await?;
+
+    let node = Node::new(node_id, addr, storage, network);
+    node.set_default_request_handler().await?;
+
+    Ok(node)
+  }
+}
+
 /// Convenience implementation for using UDP transport with memory storage
 impl Node<MemoryStorage, UdpNetwork> {
   /// Create a new Kademlia node with UDP transport and memory storage
@@ -373,25 +426,12 @@ impl Node<MemoryStorage, UdpNetwork> {
     // Create the network
     let network = UdpNetwork::new(addr).await?;
 
-    let (request_tx, mut request_rx) = mpsc::channel::<(RequestMessage, SocketAddr)>(128);
-    network.set_request_handler(request_tx).await;
-
     tracing::debug!("Created UDP-backed node");
 
     // Create the node
     let node = Node::new(node_id, addr, storage, network);
 
-    // Bridge incoming requests from the network to the protocol handler
-    let protocol = Arc::clone(&node.protocol);
-    tokio::spawn(async move {
-      tracing::info!("Starting UDP request dispatch loop");
-      while let Some((request, from)) = request_rx.recv().await {
-        if let Err(err) = protocol.handle_request(request, from).await {
-          tracing::warn!(error = ?err, "Failed to handle incoming request");
-        }
-      }
-      tracing::info!("UDP request dispatch loop stopped");
-    });
+    node.set_default_request_handler().await?;
 
     Ok(node)
   }

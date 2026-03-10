@@ -24,7 +24,8 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct Protocol<S, N>
 where
   S: Storage,
-  N: Network, {
+  N: Network,
+{
   /// Local node ID
   node_id: NodeId,
   /// Local node socket address
@@ -84,8 +85,17 @@ where
 
   /// Handle an incoming request
   pub async fn handle_request(&self, req: RequestMessage, from: SocketAddr) -> Result<()> {
-    let sender = req.sender().clone();
-    let is_new_contact = self.record_contact(&sender).await?;
+    let mut sender = req.sender().clone();
+    if sender.addr != from {
+      tracing::warn!(
+        sender_id = %sender.id,
+        claimed_addr = %sender.addr,
+        packet_source = %from,
+        "Received request with mismatched sender address; using packet source address"
+      );
+      sender.addr = from;
+    }
+    let _ = self.record_contact(&sender).await?;
 
     match req {
       RequestMessage::Ping { id, sender } => {
@@ -99,12 +109,6 @@ where
       }
       RequestMessage::FindValue { id, sender, key } => {
         self.handle_find_value(id, sender, key, from).await?;
-      }
-    }
-
-    if is_new_contact {
-      if let Err(err) = self.replicate_to_new_node(&sender).await {
-        tracing::debug!(target = %sender.id, ?err, "Failed to replicate data to new node");
       }
     }
 
@@ -801,37 +805,6 @@ where
             Ok(Err(e)) => tracing::warn!(node_id = %node.id, error = ?e, "Error storing on node"),
             Err(_) => tracing::warn!(node_id = %node.id, "Timeout storing on node"),
           }
-        }
-      }
-    }
-
-    Ok(())
-  }
-
-  async fn replicate_to_new_node(&self, node: &Node) -> Result<()> {
-    let keys = {
-      let storage = self.storage.read().await;
-      storage.keys()
-    };
-
-    for key in keys {
-      let should_store = {
-        let table = self.routing_table.read().await;
-        table.get_closest(&key, K).iter().any(|closest| closest.id == node.id)
-      };
-
-      if !should_store {
-        continue;
-      }
-
-      let value_opt = {
-        let mut storage = self.storage.write().await;
-        storage.get(&key).ok()
-      };
-
-      if let Some(value) = value_opt {
-        if let Err(err) = self.store(node, key.clone(), value).await {
-          tracing::debug!(target = %node.id, key = %key, ?err, "Replication store failed");
         }
       }
     }
